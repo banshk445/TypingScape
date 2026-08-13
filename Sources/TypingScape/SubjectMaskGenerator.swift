@@ -26,12 +26,59 @@ enum SubjectMaskGenerator {
             // becomes the fill region.
             ?? generateViaBackgroundFloodFill(photo)
             ?? generateViaSaliency(photo)
+        // A solid person-shaped mask reads as a blank head with no face —
+        // punch the eyes/mouth back out as negative space wherever Vision
+        // finds a face, so those features show through in the fill.
+        let withFeatures = raw.flatMap { carveFacialFeatures(into: $0, photo: photo) ?? $0 }
         // Whichever method produced it, the raster edge is jagged
         // (single-pixel color/flood-fill decisions stair-step at an
         // angle) — a light blur turns that into a smooth transition, so
         // the boundary `isInside` traces reads as a drawn outline instead
         // of pixel steps.
-        return raw.flatMap { smoothedEdges($0) }
+        return withFeatures.flatMap { smoothedEdges($0) }
+    }
+
+    /// Cuts the eyes and mouth out of an already-generated mask as
+    /// transparent (excluded) regions, using face landmark points mapped
+    /// from Vision's own bottom-left-origin normalized space — the same
+    /// convention this file's bitmap contexts already use, so no flip is
+    /// needed. No-op (returns nil) if no face is found.
+    private static func carveFacialFeatures(into mask: CGImage, photo: CGImage) -> CGImage? {
+        let request = VNDetectFaceLandmarksRequest()
+        let handler = VNImageRequestHandler(cgImage: photo, options: [:])
+        guard (try? handler.perform([request])) != nil, let faces = request.results, !faces.isEmpty else { return nil }
+
+        let width = mask.width, height = mask.height
+        guard width > 0, height > 0 else { return nil }
+        var rgba = [UInt8](repeating: 0, count: width * height * 4)
+        guard let context = CGContext(
+            data: &rgba, width: width, height: height, bitsPerComponent: 8,
+            bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+        context.draw(mask, in: CGRect(x: 0, y: 0, width: width, height: height))
+
+        func imagePoint(_ p: CGPoint, in box: CGRect) -> CGPoint {
+            CGPoint(x: (box.origin.x + p.x * box.width) * CGFloat(width), y: (box.origin.y + p.y * box.height) * CGFloat(height))
+        }
+
+        var carvedAny = false
+        for face in faces {
+            guard let landmarks = face.landmarks else { continue }
+            let box = face.boundingBox
+            for region in [landmarks.leftEye, landmarks.rightEye, landmarks.outerLips] {
+                guard let region, region.pointCount >= 3 else { continue }
+                let path = CGMutablePath()
+                path.addLines(between: region.normalizedPoints.map { imagePoint($0, in: box) })
+                path.closeSubpath()
+                context.setBlendMode(.clear)
+                context.addPath(path)
+                context.fillPath()
+                carvedAny = true
+            }
+        }
+        guard carvedAny else { return nil }
+        return context.makeImage()
     }
 
     private static func generateViaPersonSegmentation(_ photo: CGImage) -> CGImage? {
@@ -154,9 +201,16 @@ enum SubjectMaskGenerator {
         guard (try? handler.perform([request])) != nil,
               let result = request.results?.first,
               !result.allInstances.isEmpty,
-              let maskBuffer = try? result.generateScaledMaskForImage(forInstances: result.allInstances, from: handler)
+              let maskBuffer = try? result.generateScaledMaskForImage(forInstances: result.allInstances, from: handler),
+              let mask = alphaImage(fromGrayscaleMask: maskBuffer)
         else { return nil }
-        return alphaImage(fromGrayscaleMask: maskBuffer)
+        // A busy photo can register a spuriously tiny "instance" (a stray
+        // object at the frame's edge) that would otherwise win outright and
+        // skip the fallbacks that might actually find the real subject —
+        // same sanity check `generateViaPersonSegmentation` already needed.
+        let fraction = fillFraction(of: mask)
+        guard fraction > 0.05, fraction < 0.95 else { return nil }
+        return mask
     }
 
     private static func generateViaSaliency(_ photo: CGImage) -> CGImage? {
