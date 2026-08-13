@@ -77,16 +77,7 @@ enum SubjectMaskGenerator {
             let silhouetteAlpha = Double(silhouetteData[i + 3]) / 255
             guard silhouetteAlpha > 0 else { continue }
             let luminance = (0.299 * Double(photoData[i]) + 0.587 * Double(photoData[i + 1]) + 0.114 * Double(photoData[i + 2])) / 255
-            // A raw linear (1 - luminance) leaves a lot of the fill too
-            // faint to read (most photos skew bright/midtone) and lets
-            // the very brightest spots fade to nearly invisible. `pow`
-            // pulls midtones up so more of the fill reads clearly, and a
-            // floor keeps even a bright highlight legibly dim rather than
-            // vanishing — the tonal contrast comes through as "clearer
-            // vs. dimmer text", not "text vs. blank paper".
-            let minDensity = 0.32
-            let density = minDensity + (1 - minDensity) * pow(1 - luminance, 0.6)
-            result[i + 3] = UInt8(max(0, min(255, density * 255 * silhouetteAlpha)))
+            result[i + 3] = UInt8(max(0, min(255, (1 - luminance) * 255 * silhouetteAlpha)))
         }
         guard let outContext = CGContext(
             data: &result, width: width, height: height, bitsPerComponent: 8,
