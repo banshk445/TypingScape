@@ -225,8 +225,8 @@ final class MaskStore: ObservableObject {
         case .custom(let url):
             image = loadImage(url: url)
         }
-        guard let image, let subject = SubjectMaskGenerator.generate(from: image) else { return nil }
-        return ImageMask(cgImage: subject)
+        guard let image, let generated = SubjectMaskGenerator.generate(from: image) else { return nil }
+        return ImageMask(cgImage: generated.silhouette, densityImage: generated.density)
     }
 
     nonisolated private static func loadImage(url: URL) -> CGImage? {

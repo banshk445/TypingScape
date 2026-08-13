@@ -23,7 +23,7 @@ struct MountainWordCloud: View {
         let maxCount = counts.max() ?? 1
 
         GeometryReader { geo in
-            if let mask, !flow.isEmpty, let croppedMask = mask.croppedToContent() {
+            if let mask, !flow.isEmpty, let croppedMask = mask.croppedDensityContent() {
                 let bounds = mask.contentBoundsFraction
                 let contentSize = CGSize(width: bounds.width * mask.size.width, height: bounds.height * mask.size.height)
                 let maskRect = AspectFit.rect(fitting: contentSize, in: geo.size)

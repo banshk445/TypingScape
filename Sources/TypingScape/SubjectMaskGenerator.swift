@@ -4,11 +4,21 @@ import CoreVideo
 import Vision
 
 /// Separates the main subject of a photo/drawing from its background (the
-/// same technology behind Preview's "Remove Background") and returns it as
-/// a plain alpha-channel bitmap — from there it's just another
-/// `ImageMask`, same as the hand-drawn mountain shape.
+/// same technology behind Preview's "Remove Background"), returning both a
+/// plain silhouette (for placement — the row/span fill still needs a
+/// simple "is this point inside" answer) and a second, richer mask whose
+/// alpha follows the photo's own light and shadow within that silhouette
+/// (for how densely/opaquely the fill renders). A shadowed area — an eye
+/// socket, a strand of hair, a fold in clothing — reads as densely filled;
+/// a bright highlight reads as barely filled at all, without needing to
+/// separately detect and carve out any specific feature.
 enum SubjectMaskGenerator {
-    static func generate(from photo: CGImage) -> CGImage? {
+    struct GeneratedMask {
+        let silhouette: CGImage
+        let density: CGImage
+    }
+
+    static func generate(from photo: CGImage) -> GeneratedMask? {
         // Person segmentation is a dedicated ML matte, not a color
         // heuristic — it holds up on gradient/uneven lighting (a photo's
         // skin tone fading into a dark background) where a plain color
@@ -26,82 +36,55 @@ enum SubjectMaskGenerator {
             // becomes the fill region.
             ?? generateViaBackgroundFloodFill(photo)
             ?? generateViaSaliency(photo)
-        // A solid person-shaped mask reads as a blank head with no face —
-        // punch the eyes/mouth back out as negative space wherever Vision
-        // finds a face, so those features show through in the fill.
-        let withFeatures = raw.flatMap { carveFacialFeatures(into: $0, photo: photo) ?? $0 }
         // Whichever method produced it, the raster edge is jagged
         // (single-pixel color/flood-fill decisions stair-step at an
         // angle) — a light blur turns that into a smooth transition, so
         // the boundary `isInside` traces reads as a drawn outline instead
         // of pixel steps.
-        return withFeatures.flatMap { smoothedEdges($0) }
+        guard let raw, let silhouette = smoothedEdges(raw) else { return nil }
+        let density = luminanceWeighted(bySilhouette: silhouette, photo: photo) ?? silhouette
+        return GeneratedMask(silhouette: silhouette, density: density)
     }
 
-    /// Cuts the eyes and mouth out of an already-generated mask as
-    /// transparent (excluded) regions, using face landmark points mapped
-    /// from Vision's own bottom-left-origin normalized space — the same
-    /// convention this file's bitmap contexts already use, so no flip is
-    /// needed. No-op (returns nil) if no face is found.
-    private static func carveFacialFeatures(into mask: CGImage, photo: CGImage) -> CGImage? {
-        let request = VNDetectFaceLandmarksRequest()
-        let handler = VNImageRequestHandler(cgImage: photo, options: [:])
-        guard (try? handler.perform([request])) != nil, let faces = request.results, !faces.isEmpty else { return nil }
-
-        let width = mask.width, height = mask.height
+    /// Reweights `silhouette`'s alpha by the original photo's own
+    /// luminance: darker pixels (in shadow, or just a darker tone/color)
+    /// get a higher alpha, lighter pixels a lower one, all scaled by the
+    /// silhouette's own alpha so the result stays 0 outside it and keeps
+    /// the same soft outer edge.
+    private static func luminanceWeighted(bySilhouette silhouette: CGImage, photo: CGImage) -> CGImage? {
+        let width = silhouette.width, height = silhouette.height
         guard width > 0, height > 0 else { return nil }
-        var rgba = [UInt8](repeating: 0, count: width * height * 4)
-        guard let context = CGContext(
-            data: &rgba, width: width, height: height, bitsPerComponent: 8,
+
+        var silhouetteData = [UInt8](repeating: 0, count: width * height * 4)
+        guard let silhouetteContext = CGContext(
+            data: &silhouetteData, width: width, height: height, bitsPerComponent: 8,
             bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
         ) else { return nil }
-        context.draw(mask, in: CGRect(x: 0, y: 0, width: width, height: height))
+        silhouetteContext.draw(silhouette, in: CGRect(x: 0, y: 0, width: width, height: height))
 
-        func imagePoint(_ p: CGPoint, in box: CGRect) -> CGPoint {
-            CGPoint(x: (box.origin.x + p.x * box.width) * CGFloat(width), y: (box.origin.y + p.y * box.height) * CGFloat(height))
-        }
+        var photoData = [UInt8](repeating: 0, count: width * height * 4)
+        guard let photoContext = CGContext(
+            data: &photoData, width: width, height: height, bitsPerComponent: 8,
+            bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+        photoContext.draw(photo, in: CGRect(x: 0, y: 0, width: width, height: height))
 
-        // At true anatomical size, an eye/mouth is only 1-2 text rows tall
-        // — too small for the row-based fill to render as a legible gap,
-        // it just reads as one slightly-short row indistinguishable from
-        // ordinary jitter. A profile's visible eye is also nearly
-        // edge-on — already a thin sliver in the source photo — so
-        // uniformly scaling its exact landmark shape just makes a bigger
-        // thin sliver, not a rounder one. An ellipse sized off the *face*
-        // (not the sliver itself), with an enforced minimum on both axes,
-        // guarantees a legible, roughly round hole regardless of viewing
-        // angle — the same way a reduced/iconic face drawing enlarges the
-        // eyes for legibility rather than reproducing their true shape.
-        func ellipsePath(for points: [CGPoint], minWidth: CGFloat, minHeight: CGFloat) -> CGPath {
-            let xs = points.map(\.x), ys = points.map(\.y)
-            let cx = (xs.min()! + xs.max()!) / 2, cy = (ys.min()! + ys.max()!) / 2
-            let w = max(xs.max()! - xs.min()!, minWidth)
-            let h = max(ys.max()! - ys.min()!, minHeight)
-            return CGPath(ellipseIn: CGRect(x: cx - w / 2, y: cy - h / 2, width: w, height: h), transform: nil)
+        var result = [UInt8](repeating: 0, count: width * height * 4)
+        for p in 0..<(width * height) {
+            let i = p * 4
+            let silhouetteAlpha = Double(silhouetteData[i + 3]) / 255
+            guard silhouetteAlpha > 0 else { continue }
+            let luminance = (0.299 * Double(photoData[i]) + 0.587 * Double(photoData[i + 1]) + 0.114 * Double(photoData[i + 2])) / 255
+            result[i + 3] = UInt8(max(0, min(255, (1 - luminance) * 255 * silhouetteAlpha)))
         }
-
-        var carvedAny = false
-        for face in faces {
-            guard let landmarks = face.landmarks else { continue }
-            let box = face.boundingBox
-            let faceHeightPx = box.height * CGFloat(height)
-            let regionsWithMinSize: [(VNFaceLandmarkRegion2D?, CGFloat, CGFloat)] = [
-                (landmarks.leftEye, faceHeightPx * 0.16, faceHeightPx * 0.1),
-                (landmarks.rightEye, faceHeightPx * 0.16, faceHeightPx * 0.1),
-                (landmarks.outerLips, faceHeightPx * 0.22, faceHeightPx * 0.14),
-            ]
-            for (region, minWidth, minHeight) in regionsWithMinSize {
-                guard let region, region.pointCount >= 3 else { continue }
-                let points = region.normalizedPoints.map { imagePoint($0, in: box) }
-                context.setBlendMode(.clear)
-                context.addPath(ellipsePath(for: points, minWidth: minWidth, minHeight: minHeight))
-                context.fillPath()
-                carvedAny = true
-            }
-        }
-        guard carvedAny else { return nil }
-        return context.makeImage()
+        guard let outContext = CGContext(
+            data: &result, width: width, height: height, bitsPerComponent: 8,
+            bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+        return outContext.makeImage()
     }
 
     private static func generateViaPersonSegmentation(_ photo: CGImage) -> CGImage? {

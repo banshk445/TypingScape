@@ -31,6 +31,12 @@ struct ImageMask {
     /// (not just used to test points) — that's what makes the fill region
     /// read as an actual bounded shape instead of a loose cloud of words.
     let cgImage: CGImage
+    /// Same silhouette bounds as `cgImage`, but with a continuous alpha —
+    /// a photo mask can weight this by its own light/shadow so the final
+    /// render's density traces the photo's actual tone. Defaults to
+    /// `cgImage` itself (an ordinary flat fill) when nothing richer is
+    /// available, e.g. every hand-drawn vector shape.
+    let densityImage: CGImage
     var size: CGSize { CGSize(width: width, height: height) }
     /// Tight bounding box of the fill region, in fractional (0...1) terms.
     /// A source image often has blank margin around the actual drawing —
@@ -39,8 +45,9 @@ struct ImageMask {
     /// available space edge to edge.
     let contentBoundsFraction: CGRect
 
-    init?(cgImage: CGImage) {
+    init?(cgImage: CGImage, densityImage: CGImage? = nil) {
         self.cgImage = cgImage
+        self.densityImage = densityImage ?? cgImage
         width = cgImage.width
         height = cgImage.height
         guard width > 0, height > 0 else { return nil }
@@ -90,11 +97,22 @@ struct ImageMask {
     /// The source bitmap cropped to `contentBoundsFraction` — draw this
     /// instead of `cgImage` to show the shape without its blank margin.
     func croppedToContent() -> CGImage? {
+        croppedToContent(of: cgImage)
+    }
+
+    /// Same crop, applied to `densityImage` instead — what the render's
+    /// final `.mask()` pass actually uses, so a photo's tone comes through
+    /// instead of a flat silhouette.
+    func croppedDensityContent() -> CGImage? {
+        croppedToContent(of: densityImage)
+    }
+
+    private func croppedToContent(of image: CGImage) -> CGImage? {
         let rect = CGRect(
             x: contentBoundsFraction.minX * CGFloat(width), y: contentBoundsFraction.minY * CGFloat(height),
             width: contentBoundsFraction.width * CGFloat(width), height: contentBoundsFraction.height * CGFloat(height)
         )
-        return cgImage.cropping(to: rect)
+        return image.cropping(to: rect)
     }
 
     /// Same crop as `croppedToContent()`, but recolored to a flat tint —
