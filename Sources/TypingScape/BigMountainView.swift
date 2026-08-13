@@ -11,6 +11,7 @@ struct BigMountainView: View {
     @ObservedObject var maskStore: MaskStore
     @ObservedObject var styleStore: StyleStore
     @State private var isPickingPhoto = false
+    @State private var isShowingStats = false
     /// `nil` means "today, live" — anything else pins the display to a
     /// completed past day from `wordStore.history`.
     @State private var selectedHistoryDate: Date?
@@ -74,6 +75,30 @@ struct BigMountainView: View {
                         Text(Self.editionDate)
                             .font(.system(size: 10.5, weight: .medium))
                             .foregroundStyle(Theme.inkSecondary)
+                        if !wordStore.historyDates.isEmpty {
+                            Menu {
+                                Button("오늘") { selectedHistoryDate = nil }
+                                ForEach(wordStore.historyDates, id: \.self) { date in
+                                    Button(Self.historyButtonFormatter.string(from: date)) { selectedHistoryDate = date }
+                                }
+                            } label: {
+                                Image(systemName: "clock.arrow.circlepath")
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(selectedHistoryDate == nil ? Theme.inkSecondary : Theme.ink)
+                            }
+                            .menuStyle(.button)
+                            .buttonStyle(.plain)
+                            .padding(.leading, 10)
+                        }
+                        Button {
+                            isShowingStats = true
+                        } label: {
+                            Image(systemName: "chart.bar")
+                                .font(.system(size: 12))
+                                .foregroundStyle(Theme.inkSecondary)
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.leading, 10)
                     }
                     Rectangle().fill(Theme.ink).frame(height: 1.5)
                 }
@@ -136,25 +161,6 @@ struct BigMountainView: View {
                 .padding(.vertical, 14)
                 .themedCard()
 
-                if !wordStore.historyDates.isEmpty {
-                    VStack(alignment: .leading, spacing: 7) {
-                        Theme.captionLabel("지난 기록")
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            HStack(spacing: 8) {
-                                Button("오늘") { selectedHistoryDate = nil }
-                                    .buttonStyle(SelectableButtonStyle(isSelected: selectedHistoryDate == nil))
-                                ForEach(wordStore.historyDates, id: \.self) { date in
-                                    Button(Self.historyButtonFormatter.string(from: date)) { selectedHistoryDate = date }
-                                        .buttonStyle(SelectableButtonStyle(isSelected: selectedHistoryDate == date))
-                                }
-                            }
-                        }
-                    }
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 12)
-                    .themedCard()
-                }
-
                 if maskStore.mask == nil, !maskStore.isLoading {
                     Spacer()
                     Text("이미지를 불러오지 못했어요")
@@ -174,6 +180,10 @@ struct BigMountainView: View {
             if case .success(let url) = result {
                 maskStore.select(.custom(url))
             }
+        }
+        .sheet(isPresented: $isShowingStats) {
+            StatsView(wordStore: wordStore)
+                .preferredColorScheme(styleStore.backgroundStyle.colorScheme)
         }
         .preferredColorScheme(styleStore.backgroundStyle.colorScheme)
         .onAppear { maskStore.viewDidAppear() }

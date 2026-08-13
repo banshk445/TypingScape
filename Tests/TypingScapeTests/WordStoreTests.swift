@@ -97,4 +97,49 @@ final class WordStoreTests: XCTestCase {
         XCTAssertEqual(relaunched.topWords(onDate: yesterday).first?.word, "hello")
         XCTAssertEqual(relaunched.wordCount(onDate: yesterday), 1)
     }
+
+    func testAggregatedCountsSumsAcrossTheWindowIncludingToday() {
+        let day0 = Date(timeIntervalSince1970: 0)
+        let store = WordStore(now: day0, defaults: freshDefaults())
+        store.record(word: "hello", now: day0)
+
+        let day1 = day0 + 86_400
+        store.record(word: "hello", now: day1)
+        store.record(word: "world", now: day1)
+
+        let day2 = day1 + 86_400
+        store.record(word: "hello", now: day2) // still today, live in wordCounts
+
+        let totals = store.aggregatedCounts(lastDays: 7, now: day2)
+        XCTAssertEqual(totals["hello"], 3)
+        XCTAssertEqual(totals["world"], 1)
+    }
+
+    func testAggregatedCountsExcludesDaysOutsideTheWindow() {
+        let day0 = Date(timeIntervalSince1970: 0)
+        let store = WordStore(now: day0, defaults: freshDefaults())
+        store.record(word: "old", now: day0)
+
+        let day1 = day0 + 86_400
+        store.record(word: "recent", now: day1)
+
+        let totals = store.aggregatedCounts(lastDays: 1, now: day1) // just "today" (day1)
+        XCTAssertNil(totals["old"])
+        XCTAssertEqual(totals["recent"], 1)
+    }
+
+    func testDailyActivityReturnsOneEntryPerDayOldestFirst() {
+        let day0 = Date(timeIntervalSince1970: 0)
+        let store = WordStore(now: day0, defaults: freshDefaults())
+        store.record(word: "cat", now: day0)
+        store.record(word: "dog", now: day0)
+
+        let day1 = day0 + 86_400
+        store.record(word: "sun", now: day1)
+
+        let activity = store.dailyActivity(lastDays: 2, now: day1)
+        XCTAssertEqual(activity.count, 2)
+        XCTAssertEqual(activity[0].count, 2) // day0: cat, dog
+        XCTAssertEqual(activity[1].count, 1) // day1 (today): sun
+    }
 }

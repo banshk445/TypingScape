@@ -85,6 +85,31 @@ final class WordStore: ObservableObject {
         history[Self.dateKeyFormatter.string(from: date)]?.count ?? 0
     }
 
+    /// Sums word counts across the last `days` calendar days including
+    /// today — what the weekly/monthly stats view ranks its word list by.
+    func aggregatedCounts(lastDays days: Int, now: Date = Date()) -> [String: Int] {
+        var result = wordCounts
+        let calendar = Calendar.current
+        for offset in 1..<max(days, 1) {
+            guard let date = calendar.date(byAdding: .day, value: -offset, to: now) else { continue }
+            let key = Self.dateKeyFormatter.string(from: date)
+            guard let counts = history[key] else { continue }
+            for (word, count) in counts { result[word, default: 0] += count }
+        }
+        return result
+    }
+
+    /// Distinct-word count per day for the last `days` days, oldest first —
+    /// what the activity chart plots.
+    func dailyActivity(lastDays days: Int, now: Date = Date()) -> [(date: Date, count: Int)] {
+        let calendar = Calendar.current
+        return (0..<max(days, 1)).reversed().compactMap { offset -> (date: Date, count: Int)? in
+            guard let date = calendar.date(byAdding: .day, value: -offset, to: now) else { return nil }
+            let count = offset == 0 ? wordCounts.count : wordCount(onDate: date)
+            return (date: date, count: count)
+        }
+    }
+
     private func resetIfNewDay(now: Date) {
         let today = Self.dayOrdinal(for: now)
         guard today != trackedDay else { return }
