@@ -62,17 +62,40 @@ enum SubjectMaskGenerator {
             CGPoint(x: (box.origin.x + p.x * box.width) * CGFloat(width), y: (box.origin.y + p.y * box.height) * CGFloat(height))
         }
 
+        // At true anatomical size, an eye/mouth is only 1-2 text rows tall
+        // — too small for the row-based fill to render as a legible gap,
+        // it just reads as one slightly-short row indistinguishable from
+        // ordinary jitter. A profile's visible eye is also nearly
+        // edge-on — already a thin sliver in the source photo — so
+        // uniformly scaling its exact landmark shape just makes a bigger
+        // thin sliver, not a rounder one. An ellipse sized off the *face*
+        // (not the sliver itself), with an enforced minimum on both axes,
+        // guarantees a legible, roughly round hole regardless of viewing
+        // angle — the same way a reduced/iconic face drawing enlarges the
+        // eyes for legibility rather than reproducing their true shape.
+        func ellipsePath(for points: [CGPoint], minWidth: CGFloat, minHeight: CGFloat) -> CGPath {
+            let xs = points.map(\.x), ys = points.map(\.y)
+            let cx = (xs.min()! + xs.max()!) / 2, cy = (ys.min()! + ys.max()!) / 2
+            let w = max(xs.max()! - xs.min()!, minWidth)
+            let h = max(ys.max()! - ys.min()!, minHeight)
+            return CGPath(ellipseIn: CGRect(x: cx - w / 2, y: cy - h / 2, width: w, height: h), transform: nil)
+        }
+
         var carvedAny = false
         for face in faces {
             guard let landmarks = face.landmarks else { continue }
             let box = face.boundingBox
-            for region in [landmarks.leftEye, landmarks.rightEye, landmarks.outerLips] {
+            let faceHeightPx = box.height * CGFloat(height)
+            let regionsWithMinSize: [(VNFaceLandmarkRegion2D?, CGFloat, CGFloat)] = [
+                (landmarks.leftEye, faceHeightPx * 0.16, faceHeightPx * 0.1),
+                (landmarks.rightEye, faceHeightPx * 0.16, faceHeightPx * 0.1),
+                (landmarks.outerLips, faceHeightPx * 0.22, faceHeightPx * 0.14),
+            ]
+            for (region, minWidth, minHeight) in regionsWithMinSize {
                 guard let region, region.pointCount >= 3 else { continue }
-                let path = CGMutablePath()
-                path.addLines(between: region.normalizedPoints.map { imagePoint($0, in: box) })
-                path.closeSubpath()
+                let points = region.normalizedPoints.map { imagePoint($0, in: box) }
                 context.setBlendMode(.clear)
-                context.addPath(path)
+                context.addPath(ellipsePath(for: points, minWidth: minWidth, minHeight: minHeight))
                 context.fillPath()
                 carvedAny = true
             }
