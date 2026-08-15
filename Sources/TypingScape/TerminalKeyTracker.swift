@@ -8,11 +8,11 @@ import ApplicationServices
 /// with no way to tell what the user actually typed from what a program
 /// printed. A raw keystroke tap is the only signal that's actually theirs.
 ///
-/// ponytail: unlike `FocusedTextTracker`, this sees keys before IME
-/// composition — a 2-beolsik Hangul input produces one raw jamo per
-/// keystroke here, not the composed syllable, so Korean terminal input
-/// segments less accurately. Accepted trade-off for terminal coverage at
-/// all (README-documented limitation lifted only for ASCII-ish accuracy).
+/// Unlike `FocusedTextTracker`, this sees keys before IME composition —
+/// a 2-beolsik Hangul input produces one raw jamo per keystroke here, not
+/// the composed syllable — so `HangulComposer` reimplements that
+/// composition step itself (same algorithm a real IME uses) rather than
+/// recording raw jamo runs as "words".
 ///
 /// ponytail: sees every keystroke while a terminal is frontmost, including
 /// anything typed at a `sudo`/`ssh` password prompt. `WordStore.record`'s
@@ -40,6 +40,7 @@ final class TerminalKeyTracker {
     private var runLoopSource: CFRunLoopSource?
     private var activationToken: NSObjectProtocol?
     private var wordBuffer = ""
+    private var composer = HangulComposer()
     private var isTerminalFrontmost = false
 
     init(onWord: @escaping (String) -> Void) {
@@ -118,20 +119,32 @@ final class TerminalKeyTracker {
     private func handle(event: CGEvent) {
         guard let nsEvent = NSEvent(cgEvent: event) else { return }
         if nsEvent.keyCode == Self.deleteKeyCode {
-            if !wordBuffer.isEmpty { wordBuffer.removeLast() }
+            // A pending (uncomposed) syllable takes the backspace first,
+            // same as any real IME — only once there's nothing left
+            // in-progress does it fall back to erasing a finalized character.
+            if composer.hasPending {
+                composer.backspace()
+            } else if !wordBuffer.isEmpty {
+                wordBuffer.removeLast()
+            }
             return
         }
         guard let characters = nsEvent.characters else { return }
         for ch in characters {
-            if ch.isLetter || ch.isNumber {
+            if HangulComposer.isJamo(ch) {
+                wordBuffer += composer.ingest(ch)
+            } else if ch.isLetter || ch.isNumber {
+                wordBuffer += composer.flush()
                 wordBuffer.append(ch)
             } else {
+                wordBuffer += composer.flush()
                 flushWord()
             }
         }
     }
 
     private func flushWord() {
+        wordBuffer += composer.flush()
         guard !wordBuffer.isEmpty else { return }
         onWord(wordBuffer)
         wordBuffer = ""
