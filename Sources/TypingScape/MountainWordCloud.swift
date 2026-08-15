@@ -47,15 +47,23 @@ struct MountainWordCloud: View {
                     // often. Measuring the tallest real glyph this style
                     // can produce keeps rows spaced to their actual size.
                     let rowHeight: CGFloat = {
+                        let glyphHeight: CGFloat
                         switch style {
                         case .collage:
                             let sample = CollageStyle.style(forWord: "가", index: 0, fontSize: maxWordSize)
                             let resolved = context.resolve(Text(sample.displayWord).font(sample.font))
-                            return resolved.measure(in: size).height + 6 * 0.7
+                            glyphHeight = resolved.measure(in: size).height + 6 * 0.7
                         case .editorial:
                             let resolved = context.resolve(Text("가").font(Theme.serif(maxWordSize, weight: .medium)))
-                            return resolved.measure(in: size).height
+                            glyphHeight = resolved.measure(in: size).height
                         }
+                        // `rowJitter` below moves each row's center by up to
+                        // ±22% of rowHeight — two adjacent rows jittering
+                        // toward each other can close to as little as 56% of
+                        // the nominal spacing, so the bare glyph height alone
+                        // (0% margin) reintroduces the exact overlap this was
+                        // measuring to avoid. 1.8x leaves room for that.
+                        return glyphHeight * 1.8
                     }()
                     let minGap: CGFloat = 4
                     let rowCount = max(1, Int(maskRect.height / rowHeight))
