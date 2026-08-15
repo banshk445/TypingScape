@@ -59,6 +59,7 @@ struct BigMountainView: View {
 
     var body: some View {
         ZStack {
+            WindowPositionFixer().frame(width: 0, height: 0)
             ThemedBackground(style: styleStore.backgroundStyle).ignoresSafeArea()
 
             VStack(spacing: 16) {
