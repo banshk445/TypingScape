@@ -1,81 +1,72 @@
 # TypingScape
 
-A macOS menu bar app that turns the words you type today into a picture. It
-tracks word frequency system-wide via the Accessibility API (not raw
-keystrokes, so it correctly sees composed Hangul/IME text), then fills a
-chosen silhouette — a mountain, a star, the sea, an uploaded photo — using
-nothing but the words themselves, packed edge-to-edge like justified text.
-No separate outline is drawn; the shape reads entirely through how densely
-the words are packed.
+오늘 입력한 단어들을 그림으로 바꿔주는 macOS 메뉴바 앱입니다. 접근성(Accessibility)
+API로 전역에서 입력한 단어의 빈도를 추적하고(원시 키 입력이 아니라 조합된 한글/IME
+텍스트를 정확히 인식), 산·별·바다·업로드한 사진 등 원하는 실루엣을 오직 단어들로만
+채웁니다 — 정렬된 텍스트처럼 가장자리까지 빈틈없이. 별도의 윤곽선은 그리지 않고,
+단어가 얼마나 촘촘하게 채워지는지로만 형태가 드러납니다.
 
 <p align="center">
   <img src="https://img.shields.io/badge/platform-macOS%2014%2B-blue" alt="macOS 14+">
 </p>
 
-## How it works
+## 동작 방식
 
-- **Word tracking** — `FocusedTextTracker` reads the value of whatever UI
-  element is currently focused, via `AXObserver`. This is what lets it
-  capture real, composed words instead of individual keystrokes or IME jamo.
-  Words reset daily at midnight; a day's finished counts are archived into
-  history instead of being discarded.
-- **Shape fill** — `MountainWordCloud` fills a mask row by row from the
-  bottom up, spreading each row's words with even gaps so every row spans
-  the mask's actual left/right edge (`ImageMask.horizontalExtents`). A word
-  typed more often renders larger (log-scaled, so a handful of outliers
-  don't visually dominate the whole shape) and denser/darker where a photo's
-  own shadow falls.
-- **Masks** — basic shapes and landscapes are hand-drawn `Shape`s rendered
-  to a bitmap. Photos (a bundled album cover, or anything you upload) go
-  through `SubjectMaskGenerator`: person/instance segmentation with Vision,
-  falling back through background flood-fill and saliency, refined with a
-  darkness threshold and hole-filling for low-contrast subjects.
+- **단어 추적** — `FocusedTextTracker`가 `AXObserver`를 통해 현재 포커스된 UI
+  요소의 값을 읽습니다. 이 방식 덕분에 낱개 키 입력이나 IME 자모가 아니라 실제로
+  조합 완료된 단어를 그대로 캡처할 수 있습니다. 단어 기록은 매일 자정에 초기화되며,
+  하루치 최종 기록은 버려지지 않고 지난 기록으로 보관됩니다.
+- **형태 채우기** — `MountainWordCloud`가 마스크를 아래에서 위로 줄 단위로 채우며,
+  각 줄의 단어 사이 간격을 균등하게 벌려서 마스크의 실제 좌우 경계
+  (`ImageMask.horizontalExtents`)까지 정확히 닿도록 합니다. 자주 입력한 단어일수록
+  더 크게 렌더링되고(로그 스케일이라 소수의 극단값이 전체 그림을 시각적으로 압도하지
+  않음), 사진의 그림자가 진 부분일수록 더 진하고 촘촘하게 채워집니다.
+- **마스크** — 기본 도형과 풍경은 직접 그린 `Shape`를 비트맵으로 렌더링한 것입니다.
+  사진(기본 제공 앨범 커버 또는 직접 업로드한 사진)은 `SubjectMaskGenerator`를
+  거칩니다: Vision의 인물/사물 세그멘테이션을 우선 시도하고, 배경 색상 기반
+  플러드필과 세일리언시(주목도)로 순차적으로 대체하며, 저대비 피사체를 위한 밝기
+  임계값 및 구멍 메우기로 다듬습니다.
 
-## Features
+## 기능
 
-- Menu bar popover with a live preview, plus a larger window for a proper
-  look.
-- Preset shapes (circle, star, mountain, house, river, sea — some
-  animated) or any photo you pick.
-- Two word-cloud styles (plain editorial serif, or a magazine-collage look
-  with colored chips) and three background textures (paper, newsprint,
-  dark).
-- Browse past days' shapes, and a weekly/monthly stats view (daily activity
-  chart + most-used words).
+- 메뉴바 팝오버에 실시간 미리보기, 그리고 제대로 볼 수 있는 큰 창.
+- 프리셋 도형(원, 별, 산, 집, 강, 바다 — 일부는 애니메이션 지원) 또는 원하는 사진.
+- 두 가지 단어 채우기 스타일(깔끔한 에디토리얼 세리프체, 또는 색깔 있는 칩을 쓰는
+  매거진 콜라주풍)과 세 가지 배경 질감(종이, 신문지, 다크).
+- 지난 날짜의 그림을 다시 보기, 주간/월간 통계(일별 입력량 그래프 + 자주 쓴 단어).
 
-## Requirements
+## 요구 사항
 
-- macOS 14+
-- Accessibility permission (prompted on first launch) — this is what lets
-  the app see focused-element text system-wide.
+- macOS 14 이상
+- 접근성 권한(첫 실행 시 요청됨) — 포커스된 요소의 텍스트를 전역에서 읽기 위해
+  필요합니다.
 
-## Running it
+## 실행 방법
 
 ```bash
 ./dev-run.sh
 ```
 
-This builds, ad-hoc code-signs with a fixed identifier (so macOS doesn't
-re-prompt for Accessibility permission on every rebuild), and launches the
-app. Only one instance runs at a time — launching again replaces the
-previous one.
+빌드 후 고정된 식별자로 애드혹 코드사이닝을 하고(그래야 다시 빌드할 때마다 macOS가
+접근성 권한을 재요청하지 않음) 앱을 실행합니다. 항상 하나의 인스턴스만 실행되며,
+다시 실행하면 이전 인스턴스를 대체합니다.
 
 ```bash
 swift build
 swift test
 ```
 
-## Privacy
+## 개인정보
 
-Everything stays on-device — word counts and history live in
-`UserDefaults`, there's no network access. Secure/password text fields are
-explicitly excluded from tracking. Real-word filtering (via `NSSpellChecker`)
-means mashed-key gibberish never gets recorded in the first place.
+모든 데이터는 기기 안에만 저장됩니다 — 단어 기록과 지난 기록은 `UserDefaults`에
+저장되고, 네트워크 접근은 전혀 없습니다. 비밀번호 입력 필드는 추적 대상에서 명시적으로
+제외됩니다. 맞춤법 검사(`NSSpellChecker`) 기반 실제 단어 필터링 덕분에 무의미한
+글자 조합은 애초에 기록되지 않습니다.
 
-## Known limitations
+## 알려진 한계
 
-- Chromium-based apps (Chrome, Slack, VS Code, Discord, ...) and terminal
-  apps render text in ways the Accessibility API often can't read
-  reliably — tracking may miss words typed there.
-- A word typed right before switching focus or apps, with no trailing
-  space/enter yet, can be lost if the app quits at that exact moment.
+- Chromium 기반 앱(Chrome, Slack, VS Code, Discord 등)과 터미널 앱은 접근성 API로
+  텍스트를 안정적으로 읽기 어려운 방식으로 렌더링하는 경우가 많아, 해당 앱에서
+  입력한 단어를 놓칠 수 있습니다.
+- 포커스나 앱을 전환하기 직전에 입력했지만 아직 공백/엔터로 확정되지 않은 단어는,
+  하필 그 순간 앱이 종료되면 유실될 수 있습니다.
