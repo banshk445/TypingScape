@@ -1,6 +1,7 @@
 import CoreGraphics
 import CoreImage
 import CoreVideo
+import ImageIO
 import Vision
 
 /// Separates the main subject of a photo/drawing from its background (the
@@ -36,20 +37,36 @@ enum SubjectMaskGenerator {
             // becomes the fill region.
             ?? generateViaBackgroundFloodFill(photo)
             ?? generateViaSaliency(photo)
+        guard let raw else { return nil }
         // Instance segmentation in particular returns a soft confidence
         // map, not a hard 0/255 cut — on a low-contrast subject (pale
         // skin against a near-white background) real-but-faint parts of
         // it can genuinely score low confidence, which `ImageMask`'s
         // fixed threshold then cuts through unevenly, catching only the
         // highest-confidence sliver instead of the whole visible shape.
-        // A brightness/gamma curve on the confidence values can't fix
-        // this correctly — it only pushes already-brighter pixels
-        // brighter, not "recognize the faint edge that's actually
-        // there". Growing outward from the mask's own confident pixels,
-        // stopping wherever the photo's own color steps sharply (a real
-        // edge/outline), does — the region-growing analog of a "magic
-        // wand" tool that respects line art.
-        guard let raw, let expanded = edgeGuidedExpansion(of: raw, photo: photo), let silhouette = smoothedEdges(expanded) else { return nil }
+        // Preferring a plain darkness mask, with its rim gaps closed and
+        // filled, recovers more of that faint part whenever darkness is
+        // actually a meaningful signal for this photo (checked the same
+        // way every other tier already does — a plausible, non-degenerate
+        // fill fraction); otherwise this falls back to whatever the
+        // segmentation chain above found. Real limit worth naming: a lit,
+        // rounded surface (a photographed torso) is often dark only along
+        // a *partial* shadow arc, not a closed rim — filling can't
+        // recover an interior nothing actually encloses, so a subject
+        // like that will still come through partial no matter how this
+        // tier is tuned.
+        let refined = darknessMask(of: photo).flatMap { candidate -> CGImage? in
+            // A shadowed edge (this album cover's lit, round belly) can
+            // trace only the rim of a shape, not fill it — the interior
+            // faces the light and is never actually dark. Dilating the
+            // mask closes small gaps in a nearly-closed rim, and filling
+            // whatever that encloses recovers the interior a plain
+            // per-pixel darkness test structurally can't.
+            let filled = fillEnclosedRegions(of: dilated(candidate, radius: 4) ?? candidate) ?? candidate
+            let fraction = fillFraction(of: filled)
+            return (fraction > 0.03 && fraction < 0.85) ? filled : nil
+        } ?? raw
+        guard let silhouette = smoothedEdges(refined) else { return nil }
         let density = luminanceWeighted(bySilhouette: silhouette, photo: photo) ?? silhouette
         return GeneratedMask(silhouette: silhouette, density: density)
     }
@@ -104,28 +121,21 @@ enum SubjectMaskGenerator {
         return outContext.makeImage()
     }
 
-    /// Starts from this mask's own confident pixels (alpha >=
-    /// `seedThreshold`) and grows outward through the photo's own pixels
-    /// wherever each step's color barely changes, stopping the instant it
-    /// doesn't — a real edge in the photo, thin outline or otherwise.
-    /// Unlike a brightness curve, this can pull in a whole real-but-faint
-    /// region the segmentation only half-recognized (pale skin next to a
-    /// confidently-detected glove) while still refusing to cross an
-    /// actual boundary, because growth is judged relative to the
-    /// immediate neighbor, not a fixed reference color or absolute level.
-    private static func edgeGuidedExpansion(
-        of mask: CGImage, photo: CGImage, seedThreshold: UInt8 = 200, edgeTolerance: Int = 12, backgroundGate: UInt8 = 15
-    ) -> CGImage? {
-        let width = mask.width, height = mask.height
+    /// A pixel counts as "subject" simply if it's dark. Tried layering
+    /// this on top of the ML segmentation (as a confidence-seeded,
+    /// reachability-gated grow) first, but the model gave essentially
+    /// zero confidence over this subject's real-but-unlit part (a belly
+    /// next to a confidently-detected glove) — and there's a genuinely
+    /// not-dark gap between the two in the photo itself, so nothing
+    /// reachability-based ever bridged it. Plain darkness, with no ML
+    /// involved at all, is what actually matched a person looking at the
+    /// photo and calling this "the shape". Note this only ever traces
+    /// dark pixels — a lit, rounded surface (this photo's belly) is dark
+    /// only along its shadowed rim, not through its whole interior;
+    /// `fillEnclosedRegions` is what turns that rim into a filled shape.
+    private static func darknessMask(of photo: CGImage, darknessThreshold: Double = 210) -> CGImage? {
+        let width = photo.width, height = photo.height
         guard width > 0, height > 0 else { return nil }
-
-        var maskData = [UInt8](repeating: 0, count: width * height * 4)
-        guard let maskContext = CGContext(
-            data: &maskData, width: width, height: height, bitsPerComponent: 8,
-            bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ) else { return nil }
-        maskContext.draw(mask, in: CGRect(x: 0, y: 0, width: width, height: height))
 
         var photoData = [UInt8](repeating: 0, count: width * height * 4)
         guard let photoContext = CGContext(
@@ -135,45 +145,104 @@ enum SubjectMaskGenerator {
         ) else { return nil }
         photoContext.draw(photo, in: CGRect(x: 0, y: 0, width: width, height: height))
 
-        func colorDiff(_ p1: Int, _ p2: Int) -> Int {
-            let i1 = p1 * 4, i2 = p2 * 4
-            return abs(Int(photoData[i1]) - Int(photoData[i2]))
-                + abs(Int(photoData[i1 + 1]) - Int(photoData[i2 + 1]))
-                + abs(Int(photoData[i1 + 2]) - Int(photoData[i2 + 2]))
+        var rgba = [UInt8](repeating: 0, count: width * height * 4)
+        for p in 0..<(width * height) {
+            let i = p * 4
+            let luminance = 0.299 * Double(photoData[i]) + 0.587 * Double(photoData[i + 1]) + 0.114 * Double(photoData[i + 2])
+            rgba[i + 3] = luminance < darknessThreshold ? 255 : 0
+        }
+        guard let outContext = CGContext(
+            data: &rgba, width: width, height: height, bitsPerComponent: 8,
+            bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+        return outContext.makeImage()
+    }
+
+    /// Grows the mask outward by `radius` in every direction (a
+    /// separable box dilation — two 1D passes instead of a full 2D
+    /// kernel, so this stays fast at real photo resolutions). Closes
+    /// small gaps in a rim that's *almost* a closed loop, which is what
+    /// lets `fillEnclosedRegions` treat it as one afterward.
+    private static func dilated(_ mask: CGImage, radius: Int) -> CGImage? {
+        let width = mask.width, height = mask.height
+        guard width > 0, height > 0, radius > 0 else { return mask }
+        var data = [UInt8](repeating: 0, count: width * height * 4)
+        guard let context = CGContext(
+            data: &data, width: width, height: height, bitsPerComponent: 8,
+            bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+        context.draw(mask, in: CGRect(x: 0, y: 0, width: width, height: height))
+
+        let inside = (0..<(width * height)).map { data[$0 * 4 + 3] > 128 }
+
+        var horizontal = [Bool](repeating: false, count: width * height)
+        for y in 0..<height {
+            let row = y * width
+            for x in 0..<width {
+                let lo = max(0, x - radius), hi = min(width - 1, x + radius)
+                horizontal[row + x] = (lo...hi).contains { inside[row + $0] }
+            }
+        }
+        var result = [Bool](repeating: false, count: width * height)
+        for x in 0..<width {
+            for y in 0..<height {
+                let lo = max(0, y - radius), hi = min(height - 1, y + radius)
+                result[y * width + x] = (lo...hi).contains { horizontal[$0 * width + x] }
+            }
         }
 
-        var included = [Bool](repeating: false, count: width * height)
+        var rgba = [UInt8](repeating: 0, count: width * height * 4)
+        for p in 0..<(width * height) where result[p] { rgba[p * 4 + 3] = 255 }
+        guard let outContext = CGContext(
+            data: &rgba, width: width, height: height, bitsPerComponent: 8,
+            bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+        return outContext.makeImage()
+    }
+
+    /// Flood-fills from the image border through everything NOT already
+    /// in the mask; whatever that flood never reaches is enclosed by the
+    /// mask's own boundary and gets added — the same "fill the region an
+    /// outline encloses" idea `generateViaBackgroundFloodFill` uses on a
+    /// photo's raw colors, applied here to an already-computed mask so a
+    /// closed (or nearly-closed, after `dilated`) rim becomes a filled
+    /// shape instead of staying a hollow ring.
+    private static func fillEnclosedRegions(of mask: CGImage) -> CGImage? {
+        let width = mask.width, height = mask.height
+        guard width > 0, height > 0 else { return nil }
+        var data = [UInt8](repeating: 0, count: width * height * 4)
+        guard let context = CGContext(
+            data: &data, width: width, height: height, bitsPerComponent: 8,
+            bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+        context.draw(mask, in: CGRect(x: 0, y: 0, width: width, height: height))
+
+        let isInside = (0..<(width * height)).map { data[$0 * 4 + 3] > 128 }
+        var reachedOutside = [Bool](repeating: false, count: width * height)
         var queue: [Int] = []
-        for p in 0..<(width * height) where maskData[p * 4 + 3] >= seedThreshold {
-            included[p] = true
-            queue.append(p)
-        }
-
-        // Color-similarity alone isn't a safe stopping rule on its own —
-        // a hand-drawn or JPEG-softened outline is rarely a fully closed
-        // loop, and any small gap lets growth leak clean around it into
-        // the rest of the background. Also requiring the *original*
-        // model to have thought this pixel was at least plausibly part
-        // of the subject (not confidently background) keeps growth from
-        // ever escaping that far, while still letting it recover a
-        // real-but-faint area the model was simply unsure about.
-        func tryEnqueue(_ x: Int, _ y: Int, from sourceP: Int) {
+        func tryEnqueue(_ x: Int, _ y: Int) {
             guard x >= 0, x < width, y >= 0, y < height else { return }
             let p = y * width + x
-            guard !included[p], maskData[p * 4 + 3] > backgroundGate, colorDiff(p, sourceP) < edgeTolerance else { return }
-            included[p] = true
+            guard !isInside[p], !reachedOutside[p] else { return }
+            reachedOutside[p] = true
             queue.append(p)
         }
+        for x in 0..<width { tryEnqueue(x, 0); tryEnqueue(x, height - 1) }
+        for y in 0..<height { tryEnqueue(0, y); tryEnqueue(width - 1, y) }
         var head = 0
         while head < queue.count {
             let p = queue[head]; head += 1
             let x = p % width, y = p / width
-            tryEnqueue(x - 1, y, from: p); tryEnqueue(x + 1, y, from: p)
-            tryEnqueue(x, y - 1, from: p); tryEnqueue(x, y + 1, from: p)
+            tryEnqueue(x - 1, y); tryEnqueue(x + 1, y)
+            tryEnqueue(x, y - 1); tryEnqueue(x, y + 1)
         }
 
         var rgba = [UInt8](repeating: 0, count: width * height * 4)
-        for p in 0..<(width * height) where included[p] { rgba[p * 4 + 3] = 255 }
+        for p in 0..<(width * height) where isInside[p] || !reachedOutside[p] { rgba[p * 4 + 3] = 255 }
         guard let outContext = CGContext(
             data: &rgba, width: width, height: height, bitsPerComponent: 8,
             bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
@@ -215,7 +284,7 @@ enum SubjectMaskGenerator {
 
     private static let ciContext = CIContext()
 
-    private static func smoothedEdges(_ mask: CGImage, radius: Double = 2.2) -> CGImage? {
+    private static func smoothedEdges(_ mask: CGImage, radius: Double = 1.0) -> CGImage? {
         let ciImage = CIImage(cgImage: mask)
         guard let blur = CIFilter(name: "CIGaussianBlur") else { return mask }
         blur.setValue(ciImage, forKey: kCIInputImageKey)
