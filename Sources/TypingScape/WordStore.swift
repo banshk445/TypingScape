@@ -35,7 +35,11 @@ final class WordStore: ObservableObject {
         }
 
         let savedDay = defaults.object(forKey: Self.dayKey) as? Int
-        let savedCounts = defaults.dictionary(forKey: Self.countsKey) as? [String: Int]
+        // Recorded before the length cap in `record(word:)` existed, a
+        // pasted token/hash can already be sitting in a saved day's counts —
+        // drop anything that wouldn't be accepted today.
+        let savedCounts = (defaults.dictionary(forKey: Self.countsKey) as? [String: Int])?
+            .filter { (2...20).contains($0.key.count) }
 
         if savedDay == today, let savedCounts {
             wordCounts = savedCounts
@@ -62,7 +66,10 @@ final class WordStore: ObservableObject {
     func record(word: String, now: Date = Date()) {
         resetIfNewDay(now: now)
         let key = word.lowercased()
-        guard key.count >= 2, key.contains(where: { $0.isLetter }) else { return }
+        // No real word runs this long — past this it's a pasted token, hash,
+        // or session ID that the spell checker doesn't reliably flag (unlike
+        // short mashed-key gibberish, which `isRealWord` does catch).
+        guard (2...20).contains(key.count), key.contains(where: { $0.isLetter }) else { return }
         guard Self.isRealWord(key) else { return }
         wordCounts[key, default: 0] += 1
     }
