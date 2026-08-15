@@ -7,7 +7,7 @@ enum WordFlow {
     /// entire flow. The original count travels with each entry (not just
     /// the cycle-limited `remaining`) so the renderer can still size a
     /// word by how often it was really typed today.
-    static func build(from topWords: [(word: String, count: Int)], repeatCap: Int = 6) -> [(word: String, count: Int)] {
+    static func build(from topWords: [(word: String, count: Int)], repeatCap: Int = 3) -> [(word: String, count: Int)] {
         var pool = topWords.map { (word: $0.word, count: $0.count, remaining: min($0.count, repeatCap)) }
         var result: [(word: String, count: Int)] = []
         var addedAny = true
