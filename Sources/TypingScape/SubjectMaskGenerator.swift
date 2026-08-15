@@ -70,8 +70,15 @@ enum SubjectMaskGenerator {
             // treat as part of the same shape. Keeping only the single
             // largest connected region discards those as noise.
             let isolated = significantConnectedComponents(of: filled) ?? filled
-            let fraction = fillFraction(of: isolated)
-            return (fraction > 0.03 && fraction < 0.85) ? isolated : nil
+            // A shadow arc that only traces part of a rounded subject's
+            // rim (this album cover's belly, lit on its far side) has no
+            // enclosed interior for `fillEnclosedRegions` to find at any
+            // dilation radius — the far side simply has no dark pixels to
+            // connect. Filling each component to its own convex hull
+            // recovers that interior directly from the rim's own shape.
+            let hulled = hullFilledForThinComponents(of: isolated) ?? isolated
+            let fraction = fillFraction(of: hulled)
+            return (fraction > 0.03 && fraction < 0.85) ? hulled : nil
         } ?? raw
         guard let silhouette = smoothedEdges(refined) else { return nil }
         let density = luminanceWeighted(bySilhouette: silhouette, photo: photo) ?? silhouette
@@ -281,10 +288,28 @@ enum SubjectMaskGenerator {
         context.draw(mask, in: CGRect(x: 0, y: 0, width: width, height: height))
 
         let isInside = (0..<(width * height)).map { data[$0 * 4 + 3] > 128 }
+        let components = connectedComponents(isInside: isInside, width: width, height: height)
+        guard let largest = components.map(\.count).max() else { return nil }
+        let minSize = Double(largest) * relativeSizeThreshold
+
+        var rgba = [UInt8](repeating: 0, count: width * height * 4)
+        for component in components where Double(component.count) >= minSize {
+            for p in component { rgba[p * 4 + 3] = 255 }
+        }
+        guard let outContext = CGContext(
+            data: &rgba, width: width, height: height, bitsPerComponent: 8,
+            bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+        return outContext.makeImage()
+    }
+
+    /// 4-connected BFS labeling shared by every pass that needs to reason
+    /// about the mask one physically-connected piece at a time.
+    private static func connectedComponents(isInside: [Bool], width: Int, height: Int) -> [[Int]] {
         var visited = [Bool](repeating: false, count: width * height)
         var components: [[Int]] = []
         var queue: [Int] = []
-
         for start in 0..<(width * height) where isInside[start] && !visited[start] {
             queue.removeAll(keepingCapacity: true)
             queue.append(start)
@@ -306,12 +331,53 @@ enum SubjectMaskGenerator {
             }
             components.append(component)
         }
-        guard let largest = components.map(\.count).max() else { return nil }
-        let minSize = Double(largest) * relativeSizeThreshold
+        return components
+    }
+
+    /// A rim that broke under `significantConnectedComponents` doesn't
+    /// break into one thin, low-solidity piece — each surviving fragment
+    /// can look perfectly solid on its own (a fairly straight arc
+    /// segment isn't very concave by itself). The missing interior lives
+    /// in the *gap between* fragments, not inside any single one of
+    /// them, so hulling them individually never finds it. Instead, treat
+    /// the single largest component as the anchor subject (a hand,
+    /// fingers and all) and always keep it exactly as detected, then
+    /// pool every other surviving fragment into one point cloud — if
+    /// *that* combined shape is a small fraction of its own hull's area,
+    /// the fragments are pieces of one interrupted rim (this album
+    /// cover's belly) and get filled solid together; otherwise each is
+    /// left untouched, in case they're independently meaningful.
+    private static func hullFilledForThinComponents(of mask: CGImage, solidityThreshold: Double = 0.4) -> CGImage? {
+        let width = mask.width, height = mask.height
+        guard width > 0, height > 0 else { return nil }
+        var data = [UInt8](repeating: 0, count: width * height * 4)
+        guard let context = CGContext(
+            data: &data, width: width, height: height, bitsPerComponent: 8,
+            bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+        context.draw(mask, in: CGRect(x: 0, y: 0, width: width, height: height))
+
+        let isInside = (0..<(width * height)).map { data[$0 * 4 + 3] > 128 }
+        let components = connectedComponents(isInside: isInside, width: width, height: height)
+            .sorted { $0.count > $1.count }
 
         var rgba = [UInt8](repeating: 0, count: width * height * 4)
-        for component in components where Double(component.count) >= minSize {
-            for p in component { rgba[p * 4 + 3] = 255 }
+        if let anchor = components.first {
+            for p in anchor { rgba[p * 4 + 3] = 255 }
+        }
+        let fragments = components.dropFirst()
+        if !fragments.isEmpty {
+            let pooled = fragments.flatMap { $0 }
+            let points = pooled.map { CGPoint(x: $0 % width, y: $0 / width) }
+            let hull = convexHull(of: points)
+            let hullArea = polygonArea(hull)
+            let solidity = hullArea > 0 ? Double(pooled.count) / hullArea : 1
+            if solidity < solidityThreshold, hull.count >= 3 {
+                fillPolygon(hull, width: width, height: height) { rgba[$0 * 4 + 3] = 255 }
+            } else {
+                for p in pooled { rgba[p * 4 + 3] = 255 }
+            }
         }
         guard let outContext = CGContext(
             data: &rgba, width: width, height: height, bitsPerComponent: 8,
@@ -319,6 +385,67 @@ enum SubjectMaskGenerator {
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
         ) else { return nil }
         return outContext.makeImage()
+    }
+
+    /// Andrew's monotone chain, on integer pixel coordinates.
+    private static func convexHull(of points: [CGPoint]) -> [CGPoint] {
+        let sorted = points.sorted { $0.x == $1.x ? $0.y < $1.y : $0.x < $1.x }
+        guard sorted.count >= 3 else { return sorted }
+        func cross(_ o: CGPoint, _ a: CGPoint, _ b: CGPoint) -> CGFloat {
+            (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x)
+        }
+        var lower: [CGPoint] = []
+        for p in sorted {
+            while lower.count >= 2, cross(lower[lower.count - 2], lower[lower.count - 1], p) <= 0 {
+                lower.removeLast()
+            }
+            lower.append(p)
+        }
+        var upper: [CGPoint] = []
+        for p in sorted.reversed() {
+            while upper.count >= 2, cross(upper[upper.count - 2], upper[upper.count - 1], p) <= 0 {
+                upper.removeLast()
+            }
+            upper.append(p)
+        }
+        lower.removeLast()
+        upper.removeLast()
+        return lower + upper
+    }
+
+    private static func polygonArea(_ polygon: [CGPoint]) -> Double {
+        guard polygon.count >= 3 else { return 0 }
+        var sum: CGFloat = 0
+        for i in 0..<polygon.count {
+            let a = polygon[i], b = polygon[(i + 1) % polygon.count]
+            sum += a.x * b.y - b.x * a.y
+        }
+        return abs(Double(sum)) / 2
+    }
+
+    private static func fillPolygon(_ polygon: [CGPoint], width: Int, height: Int, set: (Int) -> Void) {
+        guard polygon.count >= 3, let minY = polygon.map(\.y).min(), let maxY = polygon.map(\.y).max() else { return }
+        let yLo = max(0, Int(minY.rounded(.down)))
+        let yHi = min(height - 1, Int(maxY.rounded(.up)))
+        guard yLo <= yHi else { return }
+        for y in yLo...yHi {
+            let yc = CGFloat(y) + 0.5
+            var xs: [CGFloat] = []
+            for i in 0..<polygon.count {
+                let a = polygon[i], b = polygon[(i + 1) % polygon.count]
+                if (a.y <= yc && b.y > yc) || (b.y <= yc && a.y > yc) {
+                    xs.append(a.x + (yc - a.y) / (b.y - a.y) * (b.x - a.x))
+                }
+            }
+            xs.sort()
+            var i = 0
+            while i + 1 < xs.count {
+                let xStart = max(0, Int(xs[i].rounded()))
+                let xEnd = min(width - 1, Int(xs[i + 1].rounded()) - 1)
+                if xStart <= xEnd { for x in xStart...xEnd { set(y * width + x) } }
+                i += 2
+            }
+        }
     }
 
     private static func generateViaPersonSegmentation(_ photo: CGImage) -> CGImage? {
