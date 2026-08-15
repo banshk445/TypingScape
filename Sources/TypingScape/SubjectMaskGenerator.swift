@@ -63,8 +63,15 @@ enum SubjectMaskGenerator {
             // whatever that encloses recovers the interior a plain
             // per-pixel darkness test structurally can't.
             let filled = fillEnclosedRegions(of: dilated(candidate, radius: 4) ?? candidate) ?? candidate
-            let fraction = fillFraction(of: filled)
-            return (fraction > 0.03 && fraction < 0.85) ? filled : nil
+            // Plain darkness has no notion of "one subject" — a stray
+            // dark spot anywhere else in the photo (a printed word, a
+            // shadow, a logo) becomes its own disconnected island in the
+            // mask, scattered text the fill algorithm has no reason to
+            // treat as part of the same shape. Keeping only the single
+            // largest connected region discards those as noise.
+            let isolated = significantConnectedComponents(of: filled) ?? filled
+            let fraction = fillFraction(of: isolated)
+            return (fraction > 0.03 && fraction < 0.85) ? isolated : nil
         } ?? raw
         guard let silhouette = smoothedEdges(refined) else { return nil }
         let density = luminanceWeighted(bySilhouette: silhouette, photo: photo) ?? silhouette
@@ -243,6 +250,69 @@ enum SubjectMaskGenerator {
 
         var rgba = [UInt8](repeating: 0, count: width * height * 4)
         for p in 0..<(width * height) where isInside[p] || !reachedOutside[p] { rgba[p * 4 + 3] = 255 }
+        guard let outContext = CGContext(
+            data: &rgba, width: width, height: height, bitsPerComponent: 8,
+            bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+        return outContext.makeImage()
+    }
+
+    /// Keeps every 4-connected region of "inside" pixels big enough to
+    /// plausibly be a real part of the subject, discarding tiny ones — a
+    /// plain darkness test has no notion of "the subject" as one thing,
+    /// so a stray dark spot elsewhere in the photo (printed text, a
+    /// small shadow, a logo) becomes its own disconnected island with no
+    /// relation to the real subject. Sized relative to the *largest*
+    /// component rather than an absolute pixel count, since a real
+    /// subject can legitimately be split across several substantial but
+    /// disconnected pieces (a hand and a shadowed torso with a bright
+    /// gap between them) — keeping only the single biggest one would
+    /// throw the rest away just as wrongly as keeping every fleck of noise.
+    private static func significantConnectedComponents(of mask: CGImage, relativeSizeThreshold: Double = 0.15) -> CGImage? {
+        let width = mask.width, height = mask.height
+        guard width > 0, height > 0 else { return nil }
+        var data = [UInt8](repeating: 0, count: width * height * 4)
+        guard let context = CGContext(
+            data: &data, width: width, height: height, bitsPerComponent: 8,
+            bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+        context.draw(mask, in: CGRect(x: 0, y: 0, width: width, height: height))
+
+        let isInside = (0..<(width * height)).map { data[$0 * 4 + 3] > 128 }
+        var visited = [Bool](repeating: false, count: width * height)
+        var components: [[Int]] = []
+        var queue: [Int] = []
+
+        for start in 0..<(width * height) where isInside[start] && !visited[start] {
+            queue.removeAll(keepingCapacity: true)
+            queue.append(start)
+            visited[start] = true
+            var component = [start]
+            var head = 0
+            while head < queue.count {
+                let p = queue[head]; head += 1
+                let x = p % width, y = p / width
+                for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+                    let nx = x + dx, ny = y + dy
+                    guard nx >= 0, nx < width, ny >= 0, ny < height else { continue }
+                    let np = ny * width + nx
+                    guard isInside[np], !visited[np] else { continue }
+                    visited[np] = true
+                    queue.append(np)
+                    component.append(np)
+                }
+            }
+            components.append(component)
+        }
+        guard let largest = components.map(\.count).max() else { return nil }
+        let minSize = Double(largest) * relativeSizeThreshold
+
+        var rgba = [UInt8](repeating: 0, count: width * height * 4)
+        for component in components where Double(component.count) >= minSize {
+            for p in component { rgba[p * 4 + 3] = 255 }
+        }
         guard let outContext = CGContext(
             data: &rgba, width: width, height: height, bitsPerComponent: 8,
             bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
