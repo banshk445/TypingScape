@@ -36,12 +36,16 @@ enum SubjectMaskGenerator {
             // becomes the fill region.
             ?? generateViaBackgroundFloodFill(photo)
             ?? generateViaSaliency(photo)
-        // Whichever method produced it, the raster edge is jagged
-        // (single-pixel color/flood-fill decisions stair-step at an
-        // angle) — a light blur turns that into a smooth transition, so
-        // the boundary `isInside` traces reads as a drawn outline instead
-        // of pixel steps.
-        guard let raw, let silhouette = smoothedEdges(raw) else { return nil }
+        // Instance segmentation in particular returns a soft confidence
+        // map, not a hard 0/255 cut — on a low-contrast subject (pale
+        // skin against a near-white background) real-but-faint parts of
+        // it can genuinely score low confidence, which `ImageMask`'s
+        // fixed threshold then cuts through unevenly, catching only the
+        // highest-confidence sliver instead of the whole visible shape.
+        // Gamma-boosting each mask's own alpha is a no-op for anything
+        // already-binary (person seg, flood fill, saliency's own
+        // threshold) and fixes exactly this case.
+        guard let raw, let boosted = gammaBoosted(raw), let silhouette = smoothedEdges(boosted) else { return nil }
         let density = luminanceWeighted(bySilhouette: silhouette, photo: photo) ?? silhouette
         return GeneratedMask(silhouette: silhouette, density: density)
     }
@@ -85,6 +89,37 @@ enum SubjectMaskGenerator {
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
         ) else { return nil }
         return outContext.makeImage()
+    }
+
+    /// Boosts this mask's own alpha with `alpha' = (alpha/255)^gamma *
+    /// 255` (gamma < 1). A hard-edged mask (person segmentation, flood
+    /// fill, saliency's own threshold) only has values at/near 0 and 255,
+    /// which this leaves essentially unchanged; it's a soft confidence
+    /// map (instance segmentation) that this actually reshapes — a
+    /// low-contrast subject (pale skin against a near-white background)
+    /// can genuinely score low-but-real confidence (not just a narrow
+    /// band — contrast-stretching a range that already spans 0...255
+    /// does nothing here) that a linear/fixed threshold cuts through
+    /// unevenly. Pulling mid-low values up nonlinearly, without moving
+    /// values already near 0 or 255, lets a real-but-faint part of the
+    /// subject cross the threshold without dragging the background with it.
+    private static func gammaBoosted(_ mask: CGImage, gamma: Double = 0.5) -> CGImage? {
+        let width = mask.width, height = mask.height
+        guard width > 0, height > 0 else { return nil }
+        var data = [UInt8](repeating: 0, count: width * height * 4)
+        guard let context = CGContext(
+            data: &data, width: width, height: height, bitsPerComponent: 8,
+            bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+        context.draw(mask, in: CGRect(x: 0, y: 0, width: width, height: height))
+
+        for p in 0..<(width * height) {
+            let i = p * 4 + 3
+            let normalized = Double(data[i]) / 255
+            data[i] = UInt8(min(255, max(0, pow(normalized, gamma) * 255)))
+        }
+        return context.makeImage()
     }
 
     private static func generateViaPersonSegmentation(_ photo: CGImage) -> CGImage? {
