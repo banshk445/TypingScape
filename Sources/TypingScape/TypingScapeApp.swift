@@ -18,7 +18,16 @@ struct TypingScapeApp: App {
             ContentView(wordStore: wordStore, accessibilityGate: accessibilityGate, maskStore: maskStore, styleStore: styleStore)
                 .onAppear { startTapIfNeeded() }
                 .onChange(of: accessibilityGate.isTrusted) { _, trusted in
-                    if trusted { startTapIfNeeded() }
+                    if trusted {
+                        startTapIfNeeded()
+                    } else {
+                        // Revoked in System Settings while running — stop
+                        // tracking and clear the tracker so a later
+                        // re-grant starts a fresh one instead of assuming
+                        // the old (now-broken) observer still works.
+                        tracker?.stop()
+                        tracker = nil
+                    }
                 }
         }
         .menuBarExtraStyle(.window)
