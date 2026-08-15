@@ -60,10 +60,11 @@ struct MountainWordCloud: View {
                     let minGap: CGFloat = 4
                     let rowCount = max(1, Int(maskRect.height / rowHeight))
 
-                    // Cycles through `flow` as many times as it takes to
-                    // cover every row — the point is to fill the whole
-                    // shape, not to stop once today's (possibly short)
-                    // word list runs out once.
+                    // Goes through `flow` once, in order — a word repeats
+                    // only as many times as it was actually typed (see
+                    // WordFlow.build). Once this runs out, later rows/spans
+                    // are simply left blank rather than cycling back
+                    // through it to force the whole shape full.
                     var wordIndex = 0
 
                     struct Placed { let resolved: GraphicsContext.ResolvedText; let size: CGSize; let rotation: Double; let chipColor: Color?; let jitterY: CGFloat }
@@ -88,8 +89,8 @@ struct MountainWordCloud: View {
                         // this span.
                         var spanWords: [Placed] = []
                         var accumulated: CGFloat = 0
-                        while true {
-                            let entry = flow[wordIndex % flow.count]
+                        while wordIndex < flow.count {
+                            let entry = flow[wordIndex]
                             let word = entry.word
                             let naturalSize = FrequencyFontSize.fontSize(
                                 forCount: entry.count, minCount: minCount, maxCount: maxCount, minSize: minWordSize, maxSize: maxWordSize
