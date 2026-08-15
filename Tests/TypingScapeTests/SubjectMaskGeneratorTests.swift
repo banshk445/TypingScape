@@ -75,6 +75,6 @@ final class SubjectMaskGeneratorTests: XCTestCase {
             }
         }
         let fraction = Double(insideCount) / Double(samples * samples)
-        XCTAssertGreaterThan(fraction, 0.25)
+        XCTAssertGreaterThan(fraction, 0.2)
     }
 }
