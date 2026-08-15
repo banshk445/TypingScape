@@ -12,6 +12,7 @@ struct BigMountainView: View {
     @ObservedObject var styleStore: StyleStore
     @State private var isPickingPhoto = false
     @State private var isShowingStats = false
+    @State private var isShowingMaskDebug = false
     /// `nil` means "today, live" — anything else pins the display to a
     /// completed past day from `wordStore.history`.
     @State private var selectedHistoryDate: Date?
@@ -94,6 +95,16 @@ struct BigMountainView: View {
                             isShowingStats = true
                         } label: {
                             Image(systemName: "chart.bar")
+                                .font(.system(size: 12))
+                                .foregroundStyle(Theme.inkSecondary)
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.leading, 10)
+
+                        Button {
+                            isShowingMaskDebug = true
+                        } label: {
+                            Image(systemName: "ladybug")
                                 .font(.system(size: 12))
                                 .foregroundStyle(Theme.inkSecondary)
                         }
@@ -183,6 +194,10 @@ struct BigMountainView: View {
         }
         .sheet(isPresented: $isShowingStats) {
             StatsView(wordStore: wordStore)
+                .preferredColorScheme(styleStore.backgroundStyle.colorScheme)
+        }
+        .sheet(isPresented: $isShowingMaskDebug) {
+            MaskDebugView(maskStore: maskStore)
                 .preferredColorScheme(styleStore.backgroundStyle.colorScheme)
         }
         .preferredColorScheme(styleStore.backgroundStyle.colorScheme)
