@@ -54,9 +54,20 @@ final class TerminalKeyTracker {
             place: .headInsertEventTap,
             options: .listenOnly,
             eventsOfInterest: CGEventMask(1 << CGEventType.keyDown.rawValue),
-            callback: { _, _, event, refcon in
+            callback: { _, type, event, refcon in
                 guard let refcon else { return Unmanaged.passUnretained(event) }
-                Unmanaged<TerminalKeyTracker>.fromOpaque(refcon).takeUnretainedValue().handle(event: event)
+                let tracker = Unmanaged<TerminalKeyTracker>.fromOpaque(refcon).takeUnretainedValue()
+                // The tap delivers these two regardless of the requested
+                // event mask (a timeout, or the system deciding the tap is
+                // unresponsive) — not a real keystroke, and NSEvent can't
+                // represent them at all (crashes converting one). Only a
+                // re-enable, nothing else.
+                if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+                    tracker.reEnableIfNeeded()
+                    return Unmanaged.passUnretained(event)
+                }
+                guard type == .keyDown else { return Unmanaged.passUnretained(event) }
+                tracker.handle(event: event)
                 return Unmanaged.passUnretained(event)
             },
             userInfo: refcon
@@ -89,6 +100,11 @@ final class TerminalKeyTracker {
         runLoopSource = nil
         flushWord()
         isTerminalFrontmost = false
+    }
+
+    fileprivate func reEnableIfNeeded() {
+        guard isTerminalFrontmost, let tap = eventTap else { return }
+        CGEvent.tapEnable(tap: tap, enable: true)
     }
 
     private func setFrontmost(bundleIdentifier: String?) {
