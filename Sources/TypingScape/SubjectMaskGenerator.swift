@@ -42,10 +42,14 @@ enum SubjectMaskGenerator {
         // it can genuinely score low confidence, which `ImageMask`'s
         // fixed threshold then cuts through unevenly, catching only the
         // highest-confidence sliver instead of the whole visible shape.
-        // Gamma-boosting each mask's own alpha is a no-op for anything
-        // already-binary (person seg, flood fill, saliency's own
-        // threshold) and fixes exactly this case.
-        guard let raw, let boosted = gammaBoosted(raw), let silhouette = smoothedEdges(boosted) else { return nil }
+        // A brightness/gamma curve on the confidence values can't fix
+        // this correctly — it only pushes already-brighter pixels
+        // brighter, not "recognize the faint edge that's actually
+        // there". Growing outward from the mask's own confident pixels,
+        // stopping wherever the photo's own color steps sharply (a real
+        // edge/outline), does — the region-growing analog of a "magic
+        // wand" tool that respects line art.
+        guard let raw, let expanded = edgeGuidedExpansion(of: raw, photo: photo), let silhouette = smoothedEdges(expanded) else { return nil }
         let density = luminanceWeighted(bySilhouette: silhouette, photo: photo) ?? silhouette
         return GeneratedMask(silhouette: silhouette, density: density)
     }
@@ -100,35 +104,82 @@ enum SubjectMaskGenerator {
         return outContext.makeImage()
     }
 
-    /// Boosts this mask's own alpha with `alpha' = (alpha/255)^gamma *
-    /// 255` (gamma < 1). A hard-edged mask (person segmentation, flood
-    /// fill, saliency's own threshold) only has values at/near 0 and 255,
-    /// which this leaves essentially unchanged; it's a soft confidence
-    /// map (instance segmentation) that this actually reshapes — a
-    /// low-contrast subject (pale skin against a near-white background)
-    /// can genuinely score low-but-real confidence (not just a narrow
-    /// band — contrast-stretching a range that already spans 0...255
-    /// does nothing here) that a linear/fixed threshold cuts through
-    /// unevenly. Pulling mid-low values up nonlinearly, without moving
-    /// values already near 0 or 255, lets a real-but-faint part of the
-    /// subject cross the threshold without dragging the background with it.
-    private static func gammaBoosted(_ mask: CGImage, gamma: Double = 0.5) -> CGImage? {
+    /// Starts from this mask's own confident pixels (alpha >=
+    /// `seedThreshold`) and grows outward through the photo's own pixels
+    /// wherever each step's color barely changes, stopping the instant it
+    /// doesn't — a real edge in the photo, thin outline or otherwise.
+    /// Unlike a brightness curve, this can pull in a whole real-but-faint
+    /// region the segmentation only half-recognized (pale skin next to a
+    /// confidently-detected glove) while still refusing to cross an
+    /// actual boundary, because growth is judged relative to the
+    /// immediate neighbor, not a fixed reference color or absolute level.
+    private static func edgeGuidedExpansion(
+        of mask: CGImage, photo: CGImage, seedThreshold: UInt8 = 200, edgeTolerance: Int = 12, backgroundGate: UInt8 = 15
+    ) -> CGImage? {
         let width = mask.width, height = mask.height
         guard width > 0, height > 0 else { return nil }
-        var data = [UInt8](repeating: 0, count: width * height * 4)
-        guard let context = CGContext(
-            data: &data, width: width, height: height, bitsPerComponent: 8,
+
+        var maskData = [UInt8](repeating: 0, count: width * height * 4)
+        guard let maskContext = CGContext(
+            data: &maskData, width: width, height: height, bitsPerComponent: 8,
             bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
         ) else { return nil }
-        context.draw(mask, in: CGRect(x: 0, y: 0, width: width, height: height))
+        maskContext.draw(mask, in: CGRect(x: 0, y: 0, width: width, height: height))
 
-        for p in 0..<(width * height) {
-            let i = p * 4 + 3
-            let normalized = Double(data[i]) / 255
-            data[i] = UInt8(min(255, max(0, pow(normalized, gamma) * 255)))
+        var photoData = [UInt8](repeating: 0, count: width * height * 4)
+        guard let photoContext = CGContext(
+            data: &photoData, width: width, height: height, bitsPerComponent: 8,
+            bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+        photoContext.draw(photo, in: CGRect(x: 0, y: 0, width: width, height: height))
+
+        func colorDiff(_ p1: Int, _ p2: Int) -> Int {
+            let i1 = p1 * 4, i2 = p2 * 4
+            return abs(Int(photoData[i1]) - Int(photoData[i2]))
+                + abs(Int(photoData[i1 + 1]) - Int(photoData[i2 + 1]))
+                + abs(Int(photoData[i1 + 2]) - Int(photoData[i2 + 2]))
         }
-        return context.makeImage()
+
+        var included = [Bool](repeating: false, count: width * height)
+        var queue: [Int] = []
+        for p in 0..<(width * height) where maskData[p * 4 + 3] >= seedThreshold {
+            included[p] = true
+            queue.append(p)
+        }
+
+        // Color-similarity alone isn't a safe stopping rule on its own —
+        // a hand-drawn or JPEG-softened outline is rarely a fully closed
+        // loop, and any small gap lets growth leak clean around it into
+        // the rest of the background. Also requiring the *original*
+        // model to have thought this pixel was at least plausibly part
+        // of the subject (not confidently background) keeps growth from
+        // ever escaping that far, while still letting it recover a
+        // real-but-faint area the model was simply unsure about.
+        func tryEnqueue(_ x: Int, _ y: Int, from sourceP: Int) {
+            guard x >= 0, x < width, y >= 0, y < height else { return }
+            let p = y * width + x
+            guard !included[p], maskData[p * 4 + 3] > backgroundGate, colorDiff(p, sourceP) < edgeTolerance else { return }
+            included[p] = true
+            queue.append(p)
+        }
+        var head = 0
+        while head < queue.count {
+            let p = queue[head]; head += 1
+            let x = p % width, y = p / width
+            tryEnqueue(x - 1, y, from: p); tryEnqueue(x + 1, y, from: p)
+            tryEnqueue(x, y - 1, from: p); tryEnqueue(x, y + 1, from: p)
+        }
+
+        var rgba = [UInt8](repeating: 0, count: width * height * 4)
+        for p in 0..<(width * height) where included[p] { rgba[p * 4 + 3] = 255 }
+        guard let outContext = CGContext(
+            data: &rgba, width: width, height: height, bitsPerComponent: 8,
+            bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+        return outContext.makeImage()
     }
 
     private static func generateViaPersonSegmentation(_ photo: CGImage) -> CGImage? {
