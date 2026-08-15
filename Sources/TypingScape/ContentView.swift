@@ -4,6 +4,7 @@ import SwiftUI
 struct ContentView: View {
     @ObservedObject var wordStore: WordStore
     @ObservedObject var accessibilityGate: AccessibilityGate
+    @ObservedObject var inputMonitoringGate: InputMonitoringGate
     @ObservedObject var maskStore: MaskStore
     @ObservedObject var styleStore: StyleStore
     @Environment(\.openWindow) private var openWindow
@@ -24,6 +25,10 @@ struct ContentView: View {
                     openWindow(id: "big-mountain")
                 }
                 .buttonStyle(PrimaryButtonStyle())
+
+                if !inputMonitoringGate.isTrusted {
+                    InputMonitoringHintView(gate: inputMonitoringGate)
+                }
             }
             Divider().overlay(Theme.border)
             Button("종료") { NSApplication.shared.terminate(nil) }

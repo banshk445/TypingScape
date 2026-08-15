@@ -5,9 +5,11 @@ import SwiftUI
 struct TypingScapeApp: App {
     @StateObject private var wordStore = WordStore()
     @StateObject private var accessibilityGate = AccessibilityGate()
+    @StateObject private var inputMonitoringGate = InputMonitoringGate()
     @StateObject private var maskStore = MaskStore()
     @StateObject private var styleStore = StyleStore()
     @State private var tracker: FocusedTextTracker?
+    @State private var terminalTracker: TerminalKeyTracker?
 
     init() {
         Self.terminateOtherRunningInstances()
@@ -15,8 +17,11 @@ struct TypingScapeApp: App {
 
     var body: some Scene {
         MenuBarExtra("TypingScape", systemImage: "mountain.2.fill") {
-            ContentView(wordStore: wordStore, accessibilityGate: accessibilityGate, maskStore: maskStore, styleStore: styleStore)
-                .onAppear { startTapIfNeeded() }
+            ContentView(wordStore: wordStore, accessibilityGate: accessibilityGate, inputMonitoringGate: inputMonitoringGate, maskStore: maskStore, styleStore: styleStore)
+                .onAppear {
+                    startTapIfNeeded()
+                    startTerminalTapIfNeeded()
+                }
                 .onChange(of: accessibilityGate.isTrusted) { _, trusted in
                     if trusted {
                         startTapIfNeeded()
@@ -27,6 +32,14 @@ struct TypingScapeApp: App {
                         // the old (now-broken) observer still works.
                         tracker?.stop()
                         tracker = nil
+                    }
+                }
+                .onChange(of: inputMonitoringGate.isTrusted) { _, trusted in
+                    if trusted {
+                        startTerminalTapIfNeeded()
+                    } else {
+                        terminalTracker?.stop()
+                        terminalTracker = nil
                     }
                 }
         }
@@ -44,6 +57,13 @@ struct TypingScapeApp: App {
         let newTracker = FocusedTextTracker { word in wordStore.record(word: word) }
         newTracker.start()
         tracker = newTracker
+    }
+
+    private func startTerminalTapIfNeeded() {
+        guard inputMonitoringGate.isTrusted, terminalTracker == nil else { return }
+        let newTracker = TerminalKeyTracker { word in wordStore.record(word: word) }
+        newTracker.start()
+        terminalTracker = newTracker
     }
 
     /// Dev builds relaunch often (Xcode's ⌘R, `dev-run.sh`) without the old
