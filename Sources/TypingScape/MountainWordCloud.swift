@@ -38,7 +38,25 @@ struct MountainWordCloud: View {
                     // the shape's tips relied on.
                     let minWordSize: CGFloat = 8
                     let maxWordSize: CGFloat = 15
-                    let rowHeight = maxWordSize * 0.9
+                    // A flat `maxWordSize * 0.9` guessed short of an actual
+                    // glyph's rendered height (Korean ascenders/descenders
+                    // run tall), so adjacent rows could vertically clash
+                    // wherever both landed a near-max-size word — most
+                    // visible in the menu bar's small popover, where rows
+                    // are few enough that big words end up back to back
+                    // often. Measuring the tallest real glyph this style
+                    // can produce keeps rows spaced to their actual size.
+                    let rowHeight: CGFloat = {
+                        switch style {
+                        case .collage:
+                            let sample = CollageStyle.style(forWord: "가", index: 0, fontSize: maxWordSize)
+                            let resolved = context.resolve(Text(sample.displayWord).font(sample.font))
+                            return resolved.measure(in: size).height + 6 * 0.7
+                        case .editorial:
+                            let resolved = context.resolve(Text("가").font(Theme.serif(maxWordSize, weight: .medium)))
+                            return resolved.measure(in: size).height
+                        }
+                    }()
                     let minGap: CGFloat = 4
                     let rowCount = max(1, Int(maskRect.height / rowHeight))
 
