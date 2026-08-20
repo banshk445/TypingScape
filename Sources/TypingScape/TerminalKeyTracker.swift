@@ -14,12 +14,14 @@ import ApplicationServices
 /// composition step itself (same algorithm a real IME uses) rather than
 /// recording raw jamo runs as "words".
 ///
-/// ponytail: sees every keystroke while a terminal is frontmost, including
-/// anything typed at a `sudo`/`ssh` password prompt. `WordStore.record`'s
-/// existing spell-check filter is the only backstop — a password that
-/// happens to be a real dictionary word isn't caught. Accepted trade-off
-/// (user confirmed); revisit with a pause-after-sudo/ssh heuristic if it
-/// turns out to matter.
+/// ponytail: sees every keystroke while a terminal is frontmost, so a
+/// password typed at a `sudo`/`ssh` prompt would otherwise flow straight
+/// into `WordStore` — whose spell-check filter accepts a dictionary-word
+/// password, and which then renders it *sized by how often it was typed*.
+/// `SecretPromptDetector` + `submitLine` below pause recording after a
+/// command that's about to ask for one. Heuristic, not a guarantee: an
+/// unlisted prompting command still falls through to the spell-check
+/// filter alone.
 /// Not thread-safe, and not marked `@MainActor` to enforce it — every entry
 /// point (`start`/`stop`, the CGEventTap callback) only ever actually gets
 /// called on the main run loop, since that's the only run loop `start()`
@@ -47,6 +49,11 @@ final class TerminalKeyTracker {
         "com.panic.Prompt3",
     ]
     private static let deleteKeyCode: UInt16 = 51
+    /// How long to stop recording after a secret-prompting command runs.
+    /// Long enough to cover typing a password at the prompt that follows;
+    /// short enough that an ordinary `sudo` one-liner doesn't blank out a
+    /// meaningful stretch of real typing.
+    private static let secretPauseDuration: TimeInterval = 20
 
     private let onWord: (String) -> Void
     private var eventTap: CFMachPort?
@@ -55,6 +62,10 @@ final class TerminalKeyTracker {
     private var wordBuffer = ""
     private var composer = HangulComposer()
     private var isTerminalFrontmost = false
+    /// Everything typed since the last Enter — checked against
+    /// `SecretPromptDetector` when the line is submitted.
+    private var currentLine = ""
+    private var suppressUntil: Date?
 
     init(onWord: @escaping (String) -> Void) {
         self.onWord = onWord
@@ -144,6 +155,13 @@ final class TerminalKeyTracker {
         }
         guard let characters = nsEvent.characters else { return }
         for ch in characters {
+            if ch.isNewline {
+                submitLine()
+                wordBuffer += composer.flush()
+                flushWord()
+                continue
+            }
+            currentLine.append(ch)
             if HangulComposer.isJamo(ch) {
                 wordBuffer += composer.ingest(ch)
             } else if ch.isLetter || ch.isNumber {
@@ -156,10 +174,29 @@ final class TerminalKeyTracker {
         }
     }
 
+    /// Enter was pressed — if what just ran will ask for a secret, stop
+    /// recording for a while so the password typed at that prompt never
+    /// reaches `WordStore` (whose spell-check filter would happily accept a
+    /// dictionary-word password, and then render it *sized by how often it
+    /// was typed*).
+    private func submitLine() {
+        defer { currentLine = "" }
+        guard SecretPromptDetector.promptsForSecret(currentLine) else { return }
+        suppressUntil = Date().addingTimeInterval(Self.secretPauseDuration)
+    }
+
+    private var isSuppressed: Bool {
+        guard let suppressUntil else { return false }
+        if Date() < suppressUntil { return true }
+        self.suppressUntil = nil
+        return false
+    }
+
     private func flushWord() {
         wordBuffer += composer.flush()
         guard !wordBuffer.isEmpty else { return }
-        onWord(wordBuffer)
+        // Drop, don't defer: the point is that this text is never recorded.
+        if !isSuppressed { onWord(wordBuffer) }
         wordBuffer = ""
     }
 }
