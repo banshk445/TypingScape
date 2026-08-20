@@ -25,10 +25,13 @@ struct ContentView: View {
                     openWindow(id: "big-mountain")
                 }
                 .buttonStyle(PrimaryButtonStyle())
+            }
 
-                if !inputMonitoringGate.isTrusted {
-                    InputMonitoringHintView(gate: inputMonitoringGate)
-                }
+            // Independent of the accessibility gate above — someone who
+            // only wants terminal-word tracking shouldn't have to grant
+            // Accessibility first just to see this.
+            if !inputMonitoringGate.isTrusted {
+                InputMonitoringHintView(gate: inputMonitoringGate)
             }
             Divider().overlay(Theme.border)
             Button("종료") { NSApplication.shared.terminate(nil) }
