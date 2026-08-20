@@ -119,7 +119,7 @@ struct BigMountainView: View {
                             ForEach(MaskPresetGroup.allCases, id: \.self) { group in
                                 Section(group.displayName) {
                                     ForEach(MaskPreset.allCases.filter { $0.group == group }) { preset in
-                                        let unlocked = preset.isUnlocked(wordsTyped: wordStore.bestDailyWordTotal)
+                                        let unlocked = preset.isUnlocked(wordsTyped: wordStore.lifetimeWordTotal)
                                         Button {
                                             maskStore.select(.preset(preset))
                                         } label: {

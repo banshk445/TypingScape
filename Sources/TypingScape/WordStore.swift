@@ -9,6 +9,12 @@ final class WordStore: ObservableObject {
     /// Completed days' word counts, keyed by "yyyy-MM-dd" — what the "지난
     /// 기록" browsing view reads from.
     @Published private(set) var history: [String: [String: Int]] = [:]
+    /// Every word ever recorded, counted once as it's recorded and never
+    /// recomputed from `history` — history expires after
+    /// `historyRetentionDays`, so a total derived from it would *shrink*
+    /// over time and re-lock shapes the user already opened. Progress has
+    /// to be monotonic; only "모든 기록 삭제" takes it back to zero.
+    @Published private(set) var lifetimeWordTotal = 0
     private var trackedDay: Int
     private var trackedDate: Date
     private let defaults: UserDefaults
@@ -16,6 +22,7 @@ final class WordStore: ObservableObject {
     private static let dayKey = "TypingScape.trackedDay"
     private static let dateKey = "TypingScape.trackedDate"
     private static let historyKey = "TypingScape.wordHistory"
+    private static let lifetimeTotalKey = "TypingScape.lifetimeWordTotal"
     /// How many past days of history to keep. Anything older is dropped on
     /// launch and whenever a day is archived — every recorded word is
     /// keystroke-derived, so keeping it forever means one mis-captured
@@ -57,6 +64,18 @@ final class WordStore: ObservableObject {
             let savedDate = (defaults.object(forKey: Self.dateKey) as? Date) ?? now
             archive(savedCounts, on: savedDate, now: now)
         }
+
+        if let saved = defaults.object(forKey: Self.lifetimeTotalKey) as? Int {
+            lifetimeWordTotal = saved
+        } else {
+            // First launch since this counter existed — seed it from what's
+            // still on hand so an existing user doesn't restart at zero.
+            // Undercounts anything already expired, which is the best that
+            // can be reconstructed and only ever errs downward.
+            let fromHistory = history.values.reduce(0) { $0 + $1.values.reduce(0, +) }
+            lifetimeWordTotal = wordCounts.values.reduce(0, +) + fromHistory
+            defaults.set(lifetimeWordTotal, forKey: Self.lifetimeTotalKey)
+        }
     }
 
     /// `date` is the day being filed away, `now` is when that's happening —
@@ -94,27 +113,15 @@ final class WordStore: ObservableObject {
         defaults.set(trackedDate, forKey: Self.dateKey)
     }
 
-    /// The most words any single day has reached *counting repeats*, today
-    /// included — the same total `WordFlow` turns into placed words, so it
-    /// compares directly against how many a shape holds.
-    ///
-    /// Best-of rather than today's, so a shape filled once doesn't lock
-    /// again the next morning — the point is progression, and a reward
-    /// that expires overnight isn't progress. Retention still bounds it: a
-    /// record set more than `historyRetentionDays` ago ages out with the
-    /// day that set it.
-    var bestDailyWordTotal: Int {
-        let todayTotal = wordCounts.values.reduce(0, +)
-        let bestPast = history.values.map { $0.values.reduce(0, +) }.max() ?? 0
-        return max(todayTotal, bestPast)
-    }
-
-    /// Wipes every recorded word — today's live counts and all past days'
-    /// history. Irreversible; the caller confirms with the user first.
+    /// Wipes every recorded word — today's live counts, all past days'
+    /// history, and the progress total. Irreversible; the caller confirms
+    /// with the user first.
     func resetAllData() {
         wordCounts = [:]
         history = [:]
         defaults.set(history, forKey: Self.historyKey)
+        lifetimeWordTotal = 0
+        defaults.set(0, forKey: Self.lifetimeTotalKey)
     }
 
     func record(word: String, now: Date = Date()) {
@@ -126,6 +133,8 @@ final class WordStore: ObservableObject {
         guard (2...20).contains(key.count), key.contains(where: { $0.isLetter }) else { return }
         guard Self.isRealWord(key) else { return }
         wordCounts[key, default: 0] += 1
+        lifetimeWordTotal += 1
+        defaults.set(lifetimeWordTotal, forKey: Self.lifetimeTotalKey)
     }
 
     var topWords: [(word: String, count: Int)] {

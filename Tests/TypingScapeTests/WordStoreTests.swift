@@ -181,7 +181,7 @@ final class WordStoreTests: XCTestCase {
         XCTAssertTrue(relaunched.historyDates.isEmpty)
     }
 
-    func testBestDailyWordTotalCountsRepeats() {
+    func testLifetimeTotalCountsRepeats() {
         // Shapes are filled by placed words, and a word typed 3 times is
         // placed 3 times — so the total has to count repeats, not distinct
         // words, or the gate would sit far above what filling really takes.
@@ -191,33 +191,57 @@ final class WordStoreTests: XCTestCase {
         store.record(word: "hello", now: day0)
         store.record(word: "hello", now: day0)
         XCTAssertEqual(store.wordCounts.count, 1)
-        XCTAssertEqual(store.bestDailyWordTotal, 3)
+        XCTAssertEqual(store.lifetimeWordTotal, 3)
     }
 
-    func testBestDailyWordTotalSurvivesTheDayRollingOver() {
+    func testLifetimeTotalAccumulatesAcrossDays() {
         let day0 = Date(timeIntervalSince1970: 0)
         let store = WordStore(now: day0, defaults: freshDefaults())
         store.record(word: "hello", now: day0)
         store.record(word: "world", now: day0)
-        XCTAssertEqual(store.bestDailyWordTotal, 2)
 
-        // A quiet next day must not take the record away — unlocks key off
-        // this, and a shape filled once shouldn't lock again overnight.
         let day1 = day0 + 86_400
         store.record(word: "solo", now: day1)
-        XCTAssertEqual(store.wordCounts.count, 1)
-        XCTAssertEqual(store.bestDailyWordTotal, 2)
+        XCTAssertEqual(store.wordCounts.count, 1, "today resets")
+        XCTAssertEqual(store.lifetimeWordTotal, 3, "progress does not")
     }
 
-    func testResetAllDataClearsBestDailyWordTotal() {
+    func testLifetimeTotalSurvivesHistoryExpiring() {
+        // The reason this isn't derived from `history`: history expires, so
+        // a computed total would shrink and re-lock shapes already opened.
+        let defaults = freshDefaults()
+        let day0 = Date(timeIntervalSince1970: 0)
+        let first = WordStore(now: day0, defaults: defaults)
+        first.record(word: "hello", now: day0)
+        first.record(word: "world", now: day0 + 86_400)
+        let earned = first.lifetimeWordTotal
+        XCTAssertEqual(earned, 2)
+
+        let muchLater = day0 + 86_400 * Double(WordStore.historyRetentionDays + 5)
+        let relaunched = WordStore(now: muchLater, defaults: defaults)
+        XCTAssertTrue(relaunched.historyDates.isEmpty, "history should have expired")
+        XCTAssertEqual(relaunched.lifetimeWordTotal, earned, "progress must not expire with it")
+    }
+
+    func testLifetimeTotalIsSeededForExistingUsers() {
+        // Upgrading from a build without this counter shouldn't restart
+        // someone's progress at zero.
+        let defaults = freshDefaults()
+        let day0 = Date(timeIntervalSince1970: 0)
+        defaults.set(["2026-08-13": ["hello": 5, "world": 2]], forKey: "TypingScape.wordHistory")
+        let store = WordStore(now: day0, defaults: defaults)
+        XCTAssertEqual(store.lifetimeWordTotal, 7)
+    }
+
+    func testResetAllDataClearsLifetimeTotal() {
         let day0 = Date(timeIntervalSince1970: 0)
         let store = WordStore(now: day0, defaults: freshDefaults())
         store.record(word: "hello", now: day0)
         store.record(word: "world", now: day0 + 86_400)
-        XCTAssertGreaterThan(store.bestDailyWordTotal, 0)
+        XCTAssertGreaterThan(store.lifetimeWordTotal, 0)
 
         store.resetAllData()
-        XCTAssertEqual(store.bestDailyWordTotal, 0)
+        XCTAssertEqual(store.lifetimeWordTotal, 0)
     }
 
     func testResetAllDataClearsLiveCountsAndHistory() {
