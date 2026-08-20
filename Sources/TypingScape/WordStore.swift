@@ -63,6 +63,14 @@ final class WordStore: ObservableObject {
         defaults.set(trackedDate, forKey: Self.dateKey)
     }
 
+    /// Wipes every recorded word — today's live counts and all past days'
+    /// history. Irreversible; the caller confirms with the user first.
+    func resetAllData() {
+        wordCounts = [:]
+        history = [:]
+        defaults.set(history, forKey: Self.historyKey)
+    }
+
     func record(word: String, now: Date = Date()) {
         resetIfNewDay(now: now)
         let key = word.lowercased()

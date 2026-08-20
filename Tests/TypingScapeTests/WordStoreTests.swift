@@ -142,4 +142,18 @@ final class WordStoreTests: XCTestCase {
         XCTAssertEqual(activity[0].count, 2) // day0: cat, dog
         XCTAssertEqual(activity[1].count, 1) // day1 (today): sun
     }
+
+    func testResetAllDataClearsLiveCountsAndHistory() {
+        let day0 = Date(timeIntervalSince1970: 0)
+        let store = WordStore(now: day0, defaults: freshDefaults())
+        store.record(word: "hello", now: day0)
+
+        let day1 = day0 + 86_400
+        store.record(word: "world", now: day1) // archives day0 into history
+
+        store.resetAllData()
+        XCTAssertTrue(store.wordCounts.isEmpty)
+        XCTAssertTrue(store.historyDates.isEmpty)
+        XCTAssertEqual(store.wordCount(onDate: day0), 0)
+    }
 }

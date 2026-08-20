@@ -8,6 +8,7 @@ struct StatsView: View {
     @ObservedObject var wordStore: WordStore
     @Environment(\.dismiss) private var dismiss
     @State private var period: Period = .week
+    @State private var isConfirmingReset = false
 
     enum Period: String, CaseIterable, Identifiable {
         case week, month
@@ -98,9 +99,27 @@ struct StatsView: View {
                     }
                 }
             }
+
+            HStack {
+                Spacer()
+                Button("모든 기록 삭제") { isConfirmingReset = true }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.red)
+            }
         }
         .padding(20)
         .frame(width: 420)
         .background(Theme.paperCard)
+        .confirmationDialog(
+            "모든 기록을 삭제할까요?",
+            isPresented: $isConfirmingReset,
+            titleVisibility: .visible
+        ) {
+            Button("삭제", role: .destructive) { wordStore.resetAllData() }
+            Button("취소", role: .cancel) {}
+        } message: {
+            Text("오늘 기록과 지난 기록이 모두 사라지고 되돌릴 수 없어요.")
+        }
     }
 }
