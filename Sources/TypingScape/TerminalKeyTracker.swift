@@ -21,7 +21,13 @@ import ApplicationServices
 /// (user confirmed); revisit with a pause-after-sudo/ssh heuristic if it
 /// turns out to matter.
 final class TerminalKeyTracker {
-    /// Not exhaustive — extend as new terminal apps come up.
+    /// Not exhaustive — extend as new terminal apps come up. Deliberately
+    /// excludes editors with an integrated terminal panel (VS Code, JetBrains
+    /// IDEs, ...): bundle-ID-level detection can't tell "terminal panel
+    /// focused" from "editor focused" within the same app, and those editors
+    /// already work through `FocusedTextTracker`'s AX path for the parts
+    /// that do expose a value — tapping raw keys for the whole app would
+    /// double-record everything typed in the actual editor.
     private static let terminalBundleIdentifiers: Set<String> = [
         "com.apple.Terminal",
         "com.googlecode.iterm2",
@@ -32,6 +38,8 @@ final class TerminalKeyTracker {
         "net.kovidgoyal.kitty",
         "com.github.wez.wezterm",
         "com.mitchellh.ghostty",
+        "com.termius.mac",
+        "com.panic.Prompt3",
     ]
     private static let deleteKeyCode: UInt16 = 51
 
