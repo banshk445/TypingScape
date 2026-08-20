@@ -6,22 +6,22 @@ import SwiftUI
 enum MaskPresetGroup: String, CaseIterable {
     case basic
     case landscape
-    case image
 
     var displayName: String {
         switch self {
         case .basic: return "기본 도형"
         case .landscape: return "풍경"
-        case .image: return "이미지"
         }
     }
 }
 
+/// Every preset is a hand-drawn vector shape. Photo-derived masks still
+/// exist as a feature — a user's own uploaded photo goes through
+/// `SubjectMaskGenerator` via `MaskSource.custom` — there just aren't any
+/// bundled photos shipped as presets.
 enum MaskPreset: String, CaseIterable, Identifiable {
     case circle, square, triangle, star
     case mountainIcon, house, river, sea
-    case mountainPhoto = "mountain-outline"
-    case albumCover = "album-cover"
 
     var id: String { rawValue }
 
@@ -29,7 +29,6 @@ enum MaskPreset: String, CaseIterable, Identifiable {
         switch self {
         case .circle, .square, .triangle, .star: return .basic
         case .mountainIcon, .house, .river, .sea: return .landscape
-        case .mountainPhoto, .albumCover: return .image
         }
     }
 
@@ -43,18 +42,6 @@ enum MaskPreset: String, CaseIterable, Identifiable {
         case .house: return "집"
         case .river: return "강"
         case .sea: return "바다"
-        case .mountainPhoto: return "산 그림"
-        case .albumCover: return "앨범 커버"
-        }
-    }
-
-    /// Vector presets are drawn directly (no bundled image, no
-    /// Vision/segmentation pass needed); photo-backed presets load this
-    /// PNG from the bundle and run it through `SubjectMaskGenerator`.
-    var resourceName: String? {
-        switch self {
-        case .circle, .square, .triangle, .star, .mountainIcon, .house, .river, .sea: return nil
-        case .mountainPhoto, .albumCover: return rawValue
         }
     }
 
@@ -81,8 +68,6 @@ enum MaskPreset: String, CaseIterable, Identifiable {
             return ImageMask.render(RiverShape().fill(.black), size: CGSize(width: 320, height: 320))
         case .sea:
             return ImageMask.render(SeaShape(phase: phase).fill(.black), size: CGSize(width: 320, height: 320))
-        case .mountainPhoto, .albumCover:
-            return nil
         }
     }
 }
@@ -170,8 +155,9 @@ final class MaskStore: ObservableObject {
         let source = selection
 
         // Vector shapes render instantly on the main actor — no need for
-        // the background dispatch the photo/Vision pipeline needs.
-        if case .preset(let preset) = source, preset.resourceName == nil {
+        // the background dispatch the photo/Vision pipeline needs. Every
+        // preset is a vector shape; only a custom photo takes the slow path.
+        if case .preset(let preset) = source {
             mask = preset.renderVectorMask()
             isLoading = false
             refreshAnimation()
@@ -217,15 +203,13 @@ final class MaskStore: ObservableObject {
         }
     }
 
+    /// Only ever reached for `.custom` — presets are all vector shapes and
+    /// return earlier, on the main actor.
     nonisolated private static func loadMask(for source: MaskSource) -> ImageMask? {
-        let image: CGImage?
-        switch source {
-        case .preset(let preset):
-            image = preset.resourceName.flatMap { Bundle.module.url(forResource: $0, withExtension: "png") }.flatMap(loadImage)
-        case .custom(let url):
-            image = loadImage(url: url)
-        }
-        guard let image, let generated = SubjectMaskGenerator.generate(from: image) else { return nil }
+        guard case .custom(let url) = source,
+              let image = loadImage(url: url),
+              let generated = SubjectMaskGenerator.generate(from: image)
+        else { return nil }
         return ImageMask(cgImage: generated.silhouette, densityImage: generated.density)
     }
 

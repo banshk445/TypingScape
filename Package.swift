@@ -8,7 +8,6 @@ let package = Package(
         .executableTarget(
             name: "TypingScape",
             exclude: ["Resources/Info.plist"],
-            resources: [.copy("Resources/mountain-outline.png"), .copy("Resources/album-cover.png")],
             linkerSettings: [
                 .unsafeFlags([
                     "-Xlinker", "-sectcreate",
@@ -20,7 +19,11 @@ let package = Package(
         ),
         .testTarget(
             name: "TypingScapeTests",
-            dependencies: ["TypingScape"]
+            dependencies: ["TypingScape"],
+            // Photos aren't shipped as presets anymore, but the photo mask
+            // pipeline is still live for user-uploaded images — these keep
+            // `SubjectMaskGenerator` covered against real photos.
+            resources: [.copy("Fixtures/mountain-outline.png"), .copy("Fixtures/album-cover.png")]
         ),
     ]
 )

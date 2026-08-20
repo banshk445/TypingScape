@@ -3,7 +3,7 @@ import XCTest
 
 final class MaskSourceTests: XCTestCase {
     func testPresetRoundTripsThroughStorage() {
-        let source = MaskSource.preset(.albumCover)
+        let source = MaskSource.preset(.star)
         let restored = MaskSource.from(storageValue: source.storageValue)
         XCTAssertEqual(restored, source)
     }
