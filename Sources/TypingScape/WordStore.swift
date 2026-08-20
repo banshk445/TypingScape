@@ -16,6 +16,12 @@ final class WordStore: ObservableObject {
     private static let dayKey = "TypingScape.trackedDay"
     private static let dateKey = "TypingScape.trackedDate"
     private static let historyKey = "TypingScape.wordHistory"
+    /// How many past days of history to keep. Anything older is dropped on
+    /// launch and whenever a day is archived — every recorded word is
+    /// keystroke-derived, so keeping it forever means one mis-captured
+    /// secret stays on disk indefinitely. Also bounds the stats window
+    /// (the widest is 30 days).
+    static let historyRetentionDays = 31
 
     private static let dateKeyFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -32,6 +38,7 @@ final class WordStore: ObservableObject {
 
         if let savedHistory = defaults.dictionary(forKey: Self.historyKey) as? [String: [String: Int]] {
             history = savedHistory
+            pruneHistory(now: now)
         }
 
         let savedDay = defaults.object(forKey: Self.dayKey) as? Int
@@ -48,13 +55,37 @@ final class WordStore: ObservableObject {
             // over — without this, any day that ends while the app is
             // quit would silently vanish instead of becoming history.
             let savedDate = (defaults.object(forKey: Self.dateKey) as? Date) ?? now
-            archive(savedCounts, on: savedDate)
+            archive(savedCounts, on: savedDate, now: now)
         }
     }
 
-    private func archive(_ counts: [String: Int], on date: Date) {
+    /// `date` is the day being filed away, `now` is when that's happening —
+    /// they're far apart whenever the app was closed across the rollover,
+    /// and retention has to be measured against `now`. (Pruning against
+    /// `date` instead would compare a day to itself and never expire
+    /// anything, including the just-archived day when it's already stale.)
+    private func archive(_ counts: [String: Int], on date: Date, now: Date) {
         history[Self.dateKeyFormatter.string(from: date)] = counts
+        // Archiving is the only way history grows, so pruning here (plus on
+        // launch) is enough to bound it without a separate timer.
+        pruneHistory(now: now)
         defaults.set(history, forKey: Self.historyKey)
+    }
+
+    /// Drops days past the retention window. Keys that don't parse as a
+    /// date are dropped too — they can't be browsed or aggregated (both go
+    /// through `dateKeyFormatter`), so keeping them would just be
+    /// unreachable typed text sitting on disk.
+    private func pruneHistory(now: Date) {
+        guard let cutoff = Calendar.current.date(byAdding: .day, value: -Self.historyRetentionDays, to: now) else { return }
+        let before = history.count
+        history = history.filter { key, _ in
+            guard let date = Self.dateKeyFormatter.date(from: key) else { return false }
+            return date >= cutoff
+        }
+        if history.count != before {
+            defaults.set(history, forKey: Self.historyKey)
+        }
     }
 
     private func persist() {
@@ -128,7 +159,7 @@ final class WordStore: ObservableObject {
     private func resetIfNewDay(now: Date) {
         let today = Self.dayOrdinal(for: now)
         guard today != trackedDay else { return }
-        if !wordCounts.isEmpty { archive(wordCounts, on: trackedDate) }
+        if !wordCounts.isEmpty { archive(wordCounts, on: trackedDate, now: now) }
         trackedDay = today
         trackedDate = now
         wordCounts.removeAll()

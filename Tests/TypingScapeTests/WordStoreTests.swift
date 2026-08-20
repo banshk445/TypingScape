@@ -143,6 +143,44 @@ final class WordStoreTests: XCTestCase {
         XCTAssertEqual(activity[1].count, 1) // day1 (today): sun
     }
 
+    func testHistoryOlderThanRetentionWindowIsDroppedOnArchive() {
+        let day0 = Date(timeIntervalSince1970: 0)
+        let store = WordStore(now: day0, defaults: freshDefaults())
+        store.record(word: "old", now: day0)
+
+        // Well past the window — archiving this day prunes day0.
+        let muchLater = day0 + 86_400 * Double(WordStore.historyRetentionDays + 5)
+        store.record(word: "recent", now: muchLater)
+
+        XCTAssertEqual(store.wordCount(onDate: day0), 0)
+        XCTAssertEqual(store.wordCounts["recent"], 1)
+    }
+
+    func testHistoryWithinRetentionWindowIsKept() {
+        let day0 = Date(timeIntervalSince1970: 0)
+        let store = WordStore(now: day0, defaults: freshDefaults())
+        store.record(word: "old", now: day0)
+
+        let nextDay = day0 + 86_400
+        store.record(word: "recent", now: nextDay)
+
+        XCTAssertEqual(store.topWords(onDate: day0).first?.word, "old")
+    }
+
+    func testStaleHistoryIsPrunedOnLaunch() {
+        let defaults = freshDefaults()
+        let day0 = Date(timeIntervalSince1970: 0)
+        let first = WordStore(now: day0, defaults: defaults)
+        first.record(word: "old", now: day0)
+        first.record(word: "next", now: day0 + 86_400) // archives day0
+
+        // Relaunching much later should drop it without needing an archive.
+        let muchLater = day0 + 86_400 * Double(WordStore.historyRetentionDays + 5)
+        let relaunched = WordStore(now: muchLater, defaults: defaults)
+        XCTAssertEqual(relaunched.wordCount(onDate: day0), 0)
+        XCTAssertTrue(relaunched.historyDates.isEmpty)
+    }
+
     func testResetAllDataClearsLiveCountsAndHistory() {
         let day0 = Date(timeIntervalSince1970: 0)
         let store = WordStore(now: day0, defaults: freshDefaults())
