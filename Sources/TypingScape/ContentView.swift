@@ -9,13 +9,31 @@ struct ContentView: View {
     @ObservedObject var styleStore: StyleStore
     @Environment(\.openWindow) private var openWindow
 
+    private static let previewSize = CGSize(width: 316, height: 190)
+    /// `MountainWordCloud`'s font sizes are absolute (8–15pt), so drawing
+    /// it straight into this small frame made the text enormous relative to
+    /// the shape — the popover and the big window showed visibly different
+    /// pictures of the same data. Rendering at the big window's own width
+    /// and scaling the whole thing down instead keeps the text-to-shape
+    /// ratio identical, so the popover reads as a true miniature of what
+    /// "크게 보기" opens.
+    private static let referenceWidth = BigMountainView.canvasMinWidth
+    private static var previewScale: CGFloat { previewSize.width / referenceWidth }
+    private static var referenceSize: CGSize {
+        CGSize(width: referenceWidth, height: previewSize.height / previewScale)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             if !accessibilityGate.isTrusted {
                 AccessibilityOnboardingView(gate: accessibilityGate)
             } else {
-                MountainWordCloud(topWords: Array(wordStore.topWords.prefix(30)), mask: maskStore.mask, style: styleStore.wordCloudStyle, swellOffset: maskStore.swellOffset)
-                    .frame(width: 316, height: 190)
+                // Same word budget as the big window, for the same reason:
+                // a miniature of a different set of words isn't a preview.
+                MountainWordCloud(topWords: Array(wordStore.topWords.prefix(BigMountainView.wordBudget)), mask: maskStore.mask, style: styleStore.wordCloudStyle, swellOffset: maskStore.swellOffset)
+                    .frame(width: Self.referenceSize.width, height: Self.referenceSize.height)
+                    .scaleEffect(Self.previewScale)
+                    .frame(width: Self.previewSize.width, height: Self.previewSize.height)
                     .themedCard()
 
                 Theme.wordCountText(wordStore.wordCounts.count)

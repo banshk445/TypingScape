@@ -45,6 +45,26 @@ enum MaskPreset: String, CaseIterable, Identifiable {
         }
     }
 
+    /// Distinct words in a single day needed before this shape can be
+    /// picked — the basic shapes form a progression (원 → 정사각형 →
+    /// 삼각형 → 별) that opens up as you type more. Landscape shapes are
+    /// always available: they're a different *kind* of picture, not a
+    /// further rung on the same ladder, so gating them would read as the
+    /// app withholding half its content rather than as progress.
+    var unlockThreshold: Int {
+        switch self {
+        case .circle: return 0
+        case .square: return 60
+        case .triangle: return 150
+        case .star: return 300
+        case .mountainIcon, .house, .river, .sea: return 0
+        }
+    }
+
+    func isUnlocked(bestDailyWordCount: Int) -> Bool {
+        bestDailyWordCount >= unlockThreshold
+    }
+
     /// Only the sea currently animates — `phase` is ignored by every other
     /// (static) shape.
     var isAnimated: Bool { self == .sea }

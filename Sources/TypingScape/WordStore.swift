@@ -94,6 +94,16 @@ final class WordStore: ObservableObject {
         defaults.set(trackedDate, forKey: Self.dateKey)
     }
 
+    /// The most distinct words any single day has reached, today included.
+    /// Shape unlocks key off this rather than today's count so a shape
+    /// earned once doesn't disappear the next morning — the point is
+    /// progression, and a reward that expires overnight isn't progress.
+    /// Retention still bounds it: a record set more than
+    /// `historyRetentionDays` ago ages out with the day that set it.
+    var bestDailyWordCount: Int {
+        max(wordCounts.count, history.values.map(\.count).max() ?? 0)
+    }
+
     /// Wipes every recorded word — today's live counts and all past days'
     /// history. Irreversible; the caller confirms with the user first.
     func resetAllData() {

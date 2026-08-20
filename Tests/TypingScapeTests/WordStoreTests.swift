@@ -181,6 +181,32 @@ final class WordStoreTests: XCTestCase {
         XCTAssertTrue(relaunched.historyDates.isEmpty)
     }
 
+    func testBestDailyWordCountSurvivesTheDayRollingOver() {
+        let day0 = Date(timeIntervalSince1970: 0)
+        let store = WordStore(now: day0, defaults: freshDefaults())
+        store.record(word: "hello", now: day0)
+        store.record(word: "world", now: day0)
+        XCTAssertEqual(store.bestDailyWordCount, 2)
+
+        // A quiet next day must not take the record away — unlocks key off
+        // this, and a shape earned once shouldn't vanish overnight.
+        let day1 = day0 + 86_400
+        store.record(word: "solo", now: day1)
+        XCTAssertEqual(store.wordCounts.count, 1)
+        XCTAssertEqual(store.bestDailyWordCount, 2)
+    }
+
+    func testResetAllDataClearsBestDailyWordCount() {
+        let day0 = Date(timeIntervalSince1970: 0)
+        let store = WordStore(now: day0, defaults: freshDefaults())
+        store.record(word: "hello", now: day0)
+        store.record(word: "world", now: day0 + 86_400)
+        XCTAssertGreaterThan(store.bestDailyWordCount, 0)
+
+        store.resetAllData()
+        XCTAssertEqual(store.bestDailyWordCount, 0)
+    }
+
     func testResetAllDataClearsLiveCountsAndHistory() {
         let day0 = Date(timeIntervalSince1970: 0)
         let store = WordStore(now: day0, defaults: freshDefaults())

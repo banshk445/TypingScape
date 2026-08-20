@@ -7,6 +7,12 @@ import UniformTypeIdentifiers
 /// image preset/custom photo, the word-cloud style, and the background
 /// texture, so different looks can be compared side by side.
 struct BigMountainView: View {
+    /// Shared with `ContentView`, which renders its popover preview at this
+    /// width and scales it down so both views show the same picture.
+    static let canvasMinWidth: CGFloat = 1100
+    static let canvasMinHeight: CGFloat = 750
+    static let wordBudget = 400
+
     @ObservedObject var wordStore: WordStore
     @ObservedObject var maskStore: MaskStore
     @ObservedObject var styleStore: StyleStore
@@ -113,7 +119,21 @@ struct BigMountainView: View {
                             ForEach(MaskPresetGroup.allCases, id: \.self) { group in
                                 Section(group.displayName) {
                                     ForEach(MaskPreset.allCases.filter { $0.group == group }) { preset in
-                                        Button(preset.displayName) { maskStore.select(.preset(preset)) }
+                                        let unlocked = preset.isUnlocked(bestDailyWordCount: wordStore.bestDailyWordCount)
+                                        Button {
+                                            maskStore.select(.preset(preset))
+                                        } label: {
+                                            // Naming the requirement is the
+                                            // whole point — a bare lock icon
+                                            // says "no" without saying how far
+                                            // away it is.
+                                            if unlocked {
+                                                Text(preset.displayName)
+                                            } else {
+                                                Label("\(preset.displayName) · \(preset.unlockThreshold)단어", systemImage: "lock.fill")
+                                            }
+                                        }
+                                        .disabled(!unlocked)
                                     }
                                 }
                             }
@@ -169,8 +189,8 @@ struct BigMountainView: View {
                         .foregroundStyle(Theme.inkSecondary)
                     Spacer()
                 } else {
-                    MountainWordCloud(topWords: Array(displayWords.prefix(400)), mask: maskStore.mask, style: styleStore.wordCloudStyle, swellOffset: maskStore.swellOffset)
-                        .frame(minWidth: 1100, minHeight: 750)
+                    MountainWordCloud(topWords: Array(displayWords.prefix(Self.wordBudget)), mask: maskStore.mask, style: styleStore.wordCloudStyle, swellOffset: maskStore.swellOffset)
+                        .frame(minWidth: Self.canvasMinWidth, minHeight: Self.canvasMinHeight)
                 }
 
                 Theme.wordCountText(displayWordCount, label: displayCountLabel)
