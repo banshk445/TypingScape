@@ -20,6 +20,11 @@ import ApplicationServices
 /// happens to be a real dictionary word isn't caught. Accepted trade-off
 /// (user confirmed); revisit with a pause-after-sudo/ssh heuristic if it
 /// turns out to matter.
+/// Not thread-safe, and not marked `@MainActor` to enforce it — every entry
+/// point (`start`/`stop`, the CGEventTap callback) only ever actually gets
+/// called on the main run loop, since that's the only run loop `start()`
+/// ever adds a source to. Calling `start()` from a background thread/queue
+/// would silently race instead of failing loudly.
 final class TerminalKeyTracker {
     /// Not exhaustive — extend as new terminal apps come up. Deliberately
     /// excludes editors with an integrated terminal panel (VS Code, JetBrains

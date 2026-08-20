@@ -93,6 +93,11 @@ struct IncrementalWordScanner {
     }
 }
 
+/// Not thread-safe, and not marked `@MainActor` to enforce it — every
+/// entry point (`start`/`stop`, the AXObserver callback, the poll timer)
+/// only ever actually gets called on the main run loop, since that's the
+/// only run loop `start()` ever adds a source to. Calling `start()` from a
+/// background thread/queue would silently race instead of failing loudly.
 final class FocusedTextTracker {
     private let onWord: (String) -> Void
     private var appObserver: AXObserver?
@@ -160,8 +165,8 @@ final class FocusedTextTracker {
         AXObserverAddNotification(observer, appElement, kAXFocusedUIElementChangedNotification as CFString, refcon)
         CFRunLoopAddSource(CFRunLoopGetCurrent(), AXObserverGetRunLoopSource(observer), .commonModes)
 
-        if let focused = Self.copyAttribute(appElement, kAXFocusedUIElementAttribute) {
-            trackFocusedElement((focused as! AXUIElement), observer: observer)
+        if let focused = Self.copyFocusedElement(appElement) {
+            trackFocusedElement(focused, observer: observer)
         }
     }
 
@@ -226,8 +231,8 @@ final class FocusedTextTracker {
         guard let observer = appObserver else { return }
         switch notification as String {
         case kAXFocusedUIElementChangedNotification:
-            if let focused = Self.copyAttribute(element, kAXFocusedUIElementAttribute) {
-                trackFocusedElement((focused as! AXUIElement), observer: observer)
+            if let focused = Self.copyFocusedElement(element) {
+                trackFocusedElement(focused, observer: observer)
             }
         case kAXValueChangedNotification:
             guard let newValue = Self.copyAttribute(element, kAXValueAttribute) as? String else { return }
@@ -252,8 +257,7 @@ final class FocusedTextTracker {
     /// reads and nothing else.
     private func pollTrackedElement() {
         if let appElement = currentAppElement, let observer = appObserver,
-           let focusedAny = Self.copyAttribute(appElement, kAXFocusedUIElementAttribute) {
-            let focused = focusedAny as! AXUIElement
+           let focused = Self.copyFocusedElement(appElement) {
             let alreadyTracked = trackedElement.map { CFEqual(focused, $0) } ?? false
             if !alreadyTracked {
                 trackFocusedElement(focused, observer: observer)
@@ -271,6 +275,21 @@ final class FocusedTextTracker {
         var value: AnyObject?
         guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return nil }
         return value
+    }
+
+    /// `kAXFocusedUIElementAttribute` is documented to always hold an
+    /// `AXUIElement`, but that's a runtime contract the AX server on the
+    /// other end has to honor, not something the type system enforces —
+    /// a non-compliant third-party AX bridge (seen firsthand this session:
+    /// Chromium's web content already diverges from the standard notification
+    /// contract) returning something else would crash the whole app on a
+    /// force cast just from the user switching focus to it. A safe cast
+    /// costs nothing when the server behaves and fails closed (no element
+    /// tracked this tick) when it doesn't.
+    private static func copyFocusedElement(_ element: AXUIElement) -> AXUIElement? {
+        guard let value = copyAttribute(element, kAXFocusedUIElementAttribute) else { return nil }
+        guard CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
+        return (value as! AXUIElement)
     }
 
     private static let axCallback: AXObserverCallback = { _, element, notification, refcon in
