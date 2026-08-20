@@ -119,18 +119,19 @@ struct BigMountainView: View {
                             ForEach(MaskPresetGroup.allCases, id: \.self) { group in
                                 Section(group.displayName) {
                                     ForEach(MaskPreset.allCases.filter { $0.group == group }) { preset in
-                                        let unlocked = preset.isUnlocked(bestDailyWordCount: wordStore.bestDailyWordCount)
+                                        let unlocked = preset.isUnlocked(wordsTyped: wordStore.bestDailyWordTotal)
                                         Button {
                                             maskStore.select(.preset(preset))
                                         } label: {
-                                            // Naming the requirement is the
+                                            // Naming what opens it is the
                                             // whole point — a bare lock icon
-                                            // says "no" without saying how far
-                                            // away it is.
+                                            // says "no" without saying how.
                                             if unlocked {
                                                 Text(preset.displayName)
+                                            } else if let required = preset.unlockedByFilling {
+                                                Label("\(preset.displayName) · \(required.displayName)을 다 채우면", systemImage: "lock.fill")
                                             } else {
-                                                Label("\(preset.displayName) · \(preset.unlockThreshold)단어", systemImage: "lock.fill")
+                                                Label(preset.displayName, systemImage: "lock.fill")
                                             }
                                         }
                                         .disabled(!unlocked)
@@ -189,7 +190,7 @@ struct BigMountainView: View {
                         .foregroundStyle(Theme.inkSecondary)
                     Spacer()
                 } else {
-                    MountainWordCloud(topWords: Array(displayWords.prefix(Self.wordBudget)), mask: maskStore.mask, style: styleStore.wordCloudStyle, swellOffset: maskStore.swellOffset)
+                    MountainWordCloud(topWords: Array(displayWords.prefix(Self.wordBudget)), mask: maskStore.mask, style: styleStore.wordCloudStyle, textScale: maskStore.textScale, swellOffset: maskStore.swellOffset)
                         .frame(minWidth: Self.canvasMinWidth, minHeight: Self.canvasMinHeight)
                 }
 

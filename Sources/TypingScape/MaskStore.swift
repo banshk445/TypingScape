@@ -45,24 +45,36 @@ enum MaskPreset: String, CaseIterable, Identifiable {
         }
     }
 
-    /// Distinct words in a single day needed before this shape can be
-    /// picked — the basic shapes form a progression (원 → 정사각형 →
-    /// 삼각형 → 별) that opens up as you type more. Landscape shapes are
-    /// always available: they're a different *kind* of picture, not a
-    /// further rung on the same ladder, so gating them would read as the
-    /// app withholding half its content rather than as progress.
-    var unlockThreshold: Int {
-        switch self {
-        case .circle: return 0
-        case .square: return 60
-        case .triangle: return 150
-        case .star: return 300
-        case .mountainIcon, .house, .river, .sea: return 0
-        }
+    /// The progression, in order: fill one shape completely and the next
+    /// opens. Landscape shapes aren't on it — they're a different *kind*
+    /// of picture, not a further rung on the same ladder, so gating them
+    /// would read as the app withholding content rather than as progress.
+    static let ladder: [MaskPreset] = [.circle, .square, .triangle, .star]
+
+    /// The shape that must be filled before this one opens, or `nil` for
+    /// anything available from the start.
+    var unlockedByFilling: MaskPreset? {
+        guard let index = Self.ladder.firstIndex(of: self), index > 0 else { return nil }
+        return Self.ladder[index - 1]
     }
 
-    func isUnlocked(bestDailyWordCount: Int) -> Bool {
-        bestDailyWordCount >= unlockThreshold
+    /// Scales the fill text for this shape. Later rungs use finer text so
+    /// each one takes more words than the last — without it the ladder
+    /// gets *easier* partway through, because a shape's capacity follows
+    /// how much of its own bounding box it covers and that runs 원 79% →
+    /// 정사각형 97% → 삼각형 50% → 별 40%. Drawing the later shapes larger
+    /// can't fix that: `MountainWordCloud` aspect-fits every mask to the
+    /// canvas, so a star drawn at any source size renders identically.
+    /// Finer text is the one knob that actually changes how much a shape
+    /// holds — and it reads as the picture getting more detailed, which
+    /// suits a later rung anyway.
+    var textScale: CGFloat {
+        switch self {
+        case .circle, .square: return 1
+        case .triangle: return 0.65
+        case .star: return 0.52
+        case .mountainIcon, .house, .river, .sea: return 1
+        }
     }
 
     /// Only the sea currently animates — `phase` is ignored by every other
@@ -89,6 +101,55 @@ enum MaskPreset: String, CaseIterable, Identifiable {
         case .sea:
             return ImageMask.render(SeaShape(phase: phase).fill(.black), size: CGSize(width: 320, height: 320))
         }
+    }
+
+    /// How many words fill this shape, at the big window's size. Cached
+    /// because it's fixed per shape (the mask is deterministic and the
+    /// reference canvas never changes) and computing it renders a mask.
+    @MainActor
+    var wordsToFill: Int {
+        if let cached = Self.fillCapacityCache[self] { return cached }
+        guard let mask = renderVectorMask() else { return .max }
+        let capacity = ShapeFillEstimator.capacity(
+            mask: mask,
+            canvas: CGSize(width: BigMountainView.canvasMinWidth, height: BigMountainView.canvasMinHeight),
+            rowHeight: Self.measuredRowHeight(fontSize: MountainWordCloud.maxWordSize * textScale),
+            averageWordWidth: Self.measuredWordWidth(fontSize: (MountainWordCloud.minWordSize + MountainWordCloud.maxWordSize) / 2 * textScale),
+            minGap: MountainWordCloud.minGap * textScale
+        )
+        Self.fillCapacityCache[self] = capacity
+        return capacity
+    }
+
+    /// Measured, not assumed: `MountainWordCloud` spaces rows by a real
+    /// glyph's rendered height, which runs well above the font's point
+    /// size (Korean ascenders/descenders are tall). Using the point size
+    /// here instead would fit ~25% more rows on paper than the renderer
+    /// ever draws, and every shape would look full long before the counter
+    /// agreed.
+    private static func measuredRowHeight(fontSize: CGFloat) -> CGFloat {
+        Self.measure("가", fontSize: fontSize).height
+    }
+
+    /// A typical Korean word — three syllables, at the middle of the size
+    /// range the renderer picks from.
+    private static func measuredWordWidth(fontSize: CGFloat) -> CGFloat {
+        Self.measure("단어들", fontSize: fontSize).width
+    }
+
+    private static func measure(_ text: String, fontSize: CGFloat) -> CGSize {
+        let font = NSFont(descriptor: NSFont.systemFont(ofSize: fontSize).fontDescriptor.withDesign(.serif) ?? NSFont.systemFont(ofSize: fontSize).fontDescriptor, size: fontSize)
+            ?? NSFont.systemFont(ofSize: fontSize)
+        return (text as NSString).size(withAttributes: [.font: font])
+    }
+
+    @MainActor
+    private static var fillCapacityCache: [MaskPreset: Int] = [:]
+
+    @MainActor
+    func isUnlocked(wordsTyped: Int) -> Bool {
+        guard let required = unlockedByFilling else { return true }
+        return wordsTyped >= required.wordsToFill
     }
 }
 
@@ -154,6 +215,13 @@ final class MaskStore: ObservableObject {
             selection = .preset(.mountainIcon)
         }
         reload()
+    }
+
+    /// The current shape's fill-text scale — 1 for an uploaded photo,
+    /// which isn't on the progression ladder.
+    var textScale: CGFloat {
+        if case .preset(let preset) = selection { return preset.textScale }
+        return 1
     }
 
     func select(_ source: MaskSource) {

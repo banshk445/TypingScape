@@ -8,9 +8,18 @@ import SwiftUI
 /// interior detail (an eye, a mouth) that the row/span sampling is too
 /// coarse to notice still gets cut in correctly.
 struct MountainWordCloud: View {
+    /// Baseline word sizes, before `textScale`. Shared with
+    /// `ShapeFillEstimator` so the progress gate measures the same layout
+    /// this actually draws.
+    static let minWordSize: CGFloat = 8
+    static let maxWordSize: CGFloat = 15
+    static let minGap: CGFloat = 4
+
     let topWords: [(word: String, count: Int)]
     let mask: ImageMask?
     var style: WordCloudStyle = .editorial
+    /// Scales every word size — see `MaskPreset.textScale`.
+    var textScale: CGFloat = 1
     /// Shifts the whole fill vertically — driven by `MaskStore`'s animated
     /// presets so the entire body of text drifts as one piece alongside
     /// the mask's own shape change, instead of only the boundary moving.
@@ -36,8 +45,8 @@ struct MountainWordCloud: View {
                     // has to fit the largest size this range can produce,
                     // which costs some of the fine row-to-row resolution
                     // the shape's tips relied on.
-                    let minWordSize: CGFloat = 8
-                    let maxWordSize: CGFloat = 15
+                    let minWordSize = Self.minWordSize * textScale
+                    let maxWordSize = Self.maxWordSize * textScale
                     // A flat `maxWordSize * 0.9` guessed short of an actual
                     // glyph's rendered height (Korean ascenders/descenders
                     // run tall), so adjacent rows could vertically clash
@@ -57,7 +66,7 @@ struct MountainWordCloud: View {
                             return resolved.measure(in: size).height
                         }
                     }()
-                    let minGap: CGFloat = 4
+                    let minGap = Self.minGap * textScale
                     let rowCount = max(1, Int(maskRect.height / rowHeight))
 
                     // Goes through `flow` once, in order — a word repeats

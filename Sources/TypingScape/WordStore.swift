@@ -94,14 +94,19 @@ final class WordStore: ObservableObject {
         defaults.set(trackedDate, forKey: Self.dateKey)
     }
 
-    /// The most distinct words any single day has reached, today included.
-    /// Shape unlocks key off this rather than today's count so a shape
-    /// earned once doesn't disappear the next morning — the point is
-    /// progression, and a reward that expires overnight isn't progress.
-    /// Retention still bounds it: a record set more than
-    /// `historyRetentionDays` ago ages out with the day that set it.
-    var bestDailyWordCount: Int {
-        max(wordCounts.count, history.values.map(\.count).max() ?? 0)
+    /// The most words any single day has reached *counting repeats*, today
+    /// included — the same total `WordFlow` turns into placed words, so it
+    /// compares directly against how many a shape holds.
+    ///
+    /// Best-of rather than today's, so a shape filled once doesn't lock
+    /// again the next morning — the point is progression, and a reward
+    /// that expires overnight isn't progress. Retention still bounds it: a
+    /// record set more than `historyRetentionDays` ago ages out with the
+    /// day that set it.
+    var bestDailyWordTotal: Int {
+        let todayTotal = wordCounts.values.reduce(0, +)
+        let bestPast = history.values.map { $0.values.reduce(0, +) }.max() ?? 0
+        return max(todayTotal, bestPast)
     }
 
     /// Wipes every recorded word — today's live counts and all past days'

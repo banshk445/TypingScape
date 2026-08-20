@@ -30,7 +30,7 @@ struct ContentView: View {
             } else {
                 // Same word budget as the big window, for the same reason:
                 // a miniature of a different set of words isn't a preview.
-                MountainWordCloud(topWords: Array(wordStore.topWords.prefix(BigMountainView.wordBudget)), mask: maskStore.mask, style: styleStore.wordCloudStyle, swellOffset: maskStore.swellOffset)
+                MountainWordCloud(topWords: Array(wordStore.topWords.prefix(BigMountainView.wordBudget)), mask: maskStore.mask, style: styleStore.wordCloudStyle, textScale: maskStore.textScale, swellOffset: maskStore.swellOffset)
                     .frame(width: Self.referenceSize.width, height: Self.referenceSize.height)
                     .scaleEffect(Self.previewScale)
                     .frame(width: Self.previewSize.width, height: Self.previewSize.height)
